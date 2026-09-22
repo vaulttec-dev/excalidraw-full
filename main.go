@@ -58,6 +58,17 @@ func handleUI() http.HandlerFunc {
 			path = "/index.html"
 		}
 
+		// The editor ships a service worker that answers every navigation from
+		// its cache, which would swallow the redirect to the login and leave the
+		// app running against endpoints that all answer 401. Serving 404 here
+		// both stops new registrations and makes browsers drop the ones they
+		// already have; the cost is the offline mode, which an instance behind a
+		// login cannot offer anyway.
+		if path == "/sw.js" || path == "/service-worker.js" {
+			http.NotFound(w, r)
+			return
+		}
+
 		// Check if the file exists in the embedded filesystem.
 		f, err := sub.Open(strings.TrimPrefix(path, "/"))
 		if err != nil {
