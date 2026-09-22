@@ -4,7 +4,9 @@ WORKDIR /app
 # 复制 excalidraw 子模块
 COPY excalidraw/ ./excalidraw/
 # 构建前端
-RUN cd excalidraw && npm install -g pnpm && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
+# pnpm is pinned to 9: from 10 onwards dependency build scripts are blocked by
+# default (ERR_PNPM_IGNORED_BUILDS) and the Excalidraw build fails.
+RUN cd excalidraw && npm install -g pnpm@9 && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
 
 # 后端构建阶段
 FROM --platform=$BUILDPLATFORM golang:alpine AS backend-builder
