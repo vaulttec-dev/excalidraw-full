@@ -1,0 +1,7 @@
+.git
+.github
+.idea
+img
+*.exe
+excalidraw/node_modules
+excalidraw/**/node_modules

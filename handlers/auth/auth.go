@@ -226,6 +226,12 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !IsLoginAllowed(githubUser.Login) {
+		logrus.WithField("login", githubUser.Login).Warn("rejected login: not in allowlist")
+		http.Redirect(w, r, "/?error=access_denied", http.StatusTemporaryRedirect)
+		return
+	}
+
 	// Create user object using Subject instead of GitHubID
 	user := &core.User{
 		Subject:   fmt.Sprintf("github:%d", githubUser.ID),
@@ -330,6 +336,12 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		user.Login = user.Email
 	}
 
+	if !IsLoginAllowed(user.Login) {
+		logrus.WithField("login", user.Login).Warn("rejected login: not in allowlist")
+		http.Redirect(w, r, "/?error=access_denied", http.StatusTemporaryRedirect)
+		return
+	}
+
 	jwtToken, err := createJWT(user)
 	if err != nil {
 		logrus.Errorf("failed to create JWT: %s", err.Error())
@@ -370,6 +382,9 @@ func ParseJWT(tokenString string) (*AppClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*AppClaims); ok && token.Valid {
+		if !IsLoginAllowed(claims.Login) {
+			return nil, fmt.Errorf("login %q is not allowed on this instance", claims.Login)
+		}
 		return claims, nil
 	}
 

@@ -138,8 +138,8 @@ func setupRouter(store stores.Store) *chi.Mux {
 	}))
 
 	r.Route("/v1/projects/{project_id}/databases/{database_id}", func(r chi.Router) {
-		r.Post("/documents:commit", firebase.HandleBatchCommit())
-		r.Post("/documents:batchGet", firebase.HandleBatchGet())
+		r.Post("/documents:commit", firebase.HandleBatchCommit(store))
+		r.Post("/documents:batchGet", firebase.HandleBatchGet(store))
 	})
 
 	r.Route("/api/v2", func(r chi.Router) {
