@@ -1,12 +1,20 @@
 # 前端构建阶段
-FROM --platform=$BUILDPLATFORM node:18 AS frontend-builder
+#
+# The frontend is our fork of the official Excalidraw (vaulttec-dev/excalidraw),
+# vendored as the `excalidraw` submodule. The fork carries only our own changes
+# on top of upstream master, so moving to a newer editor is a merge of upstream
+# into the fork — not a rebase of a third party's branch. Upstream pins yarn, so
+# the build uses yarn and its lockfile untouched.
+FROM --platform=$BUILDPLATFORM node:24 AS frontend-builder
 WORKDIR /app
 # 复制 excalidraw 子模块
 COPY excalidraw/ ./excalidraw/
 # 构建前端
-# pnpm is pinned to 9: from 10 onwards dependency build scripts are blocked by
-# default (ERR_PNPM_IGNORED_BUILDS) and the Excalidraw build fails.
-RUN cd excalidraw && npm install -g pnpm@9 && pnpm install && cd excalidraw-app && DISABLE_VITE_CHECKER=true pnpm build:app:docker
+# Optional dependencies must not be skipped: without them rollup cannot find
+# @rollup/rollup-linux-x64-gnu.
+RUN cd excalidraw \
+    && yarn --frozen-lockfile --network-timeout 600000 \
+    && yarn build:app:docker
 
 # 后端构建阶段
 FROM --platform=$BUILDPLATFORM golang:alpine AS backend-builder

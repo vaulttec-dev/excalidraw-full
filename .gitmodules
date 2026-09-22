@@ -3,5 +3,5 @@
 	url = https://github.com/betterandbetterii/cf-kv.git
 [submodule "excalidraw"]
 	path = excalidraw
-	url = https://github.com/BetterAndBetterII/excalidraw.git
-	branch = multi-canvas
+	url = https://github.com/vaulttec-dev/excalidraw.git
+	branch = master
