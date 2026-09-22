@@ -1,0 +1,32 @@
+excalidraw-complete.Dockerfile
+  s_c2ca996cae1f5e::t_8a19fe79afecff 2,8,14,17
+  s_c2ca996cae1f5e::t_5be603b22772a6 3-7,13,15-16
+.gitmodules
+  s_c2ca996cae1f5e::t_d01c0edf01f5ed 6-7
+excalidraw
+  s_83b76625da7875::t_7f7c639b96b621 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f69cac038e1c6aa10b25b309ddbb04291cf826ab",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    },
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
