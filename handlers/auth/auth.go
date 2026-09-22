@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -160,6 +162,68 @@ func Init() {
 	}
 }
 
+// sessionLifetime matches the JWT's own expiry, so the cookie and the token it
+// carries stop being valid at the same moment.
+const sessionLifetime = time.Hour * 24 * 7
+
+// SessionCookieName carries the JWT issued after a successful login. The editor
+// is upstream's own build and knows nothing about this instance's auth, so the
+// session has to be a cookie the browser sends by itself.
+const SessionCookieName = "excalidraw_session"
+
+// returnCookieName remembers where the browser was headed before it was sent
+// through the login, fragment included.
+const returnCookieName = "excalidraw_return"
+
+// rememberReturn stores the path the login was started from. Only a path is
+// accepted, so the cookie cannot be used to bounce someone to another site.
+func rememberReturn(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("return")
+	if target == "" || !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     returnCookieName,
+		Value:    url.QueryEscape(target),
+		Path:     "/",
+		Expires:  time.Now().Add(10 * time.Minute),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
+// takeReturn reads back the remembered path and clears it.
+func takeReturn(w http.ResponseWriter, r *http.Request) string {
+	cookie, err := r.Cookie(returnCookieName)
+	if err != nil {
+		return "/"
+	}
+
+	http.SetCookie(w, &http.Cookie{Name: returnCookieName, Value: "", Path: "/", MaxAge: -1})
+
+	target, err := url.QueryUnescape(cookie.Value)
+	if err != nil || !strings.HasPrefix(target, "/") || strings.HasPrefix(target, "//") {
+		return "/"
+	}
+
+	return target
+}
+
+// startSession puts the JWT in a cookie so every later request — including the
+// ones the editor makes on its own — carries it.
+func startSession(w http.ResponseWriter, r *http.Request, jwtToken string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    jwtToken,
+		Path:     "/",
+		Expires:  time.Now().Add(sessionLifetime),
+		HttpOnly: true,
+		Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func generateStateOauthCookie(w http.ResponseWriter) string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -179,9 +243,9 @@ func HandleGitHubLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GitHub OAuth is not configured", http.StatusInternalServerError)
 		return
 	}
+	rememberReturn(w, r)
 	state := generateStateOauthCookie(w)
-	url := githubOauthConfig.AuthCodeURL(state)
-	http.Redirect(w, r, url, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, githubOauthConfig.AuthCodeURL(state), http.StatusTemporaryRedirect)
 }
 
 func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
@@ -247,8 +311,16 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect to frontend with token
-	http.Redirect(w, r, fmt.Sprintf("/?token=%s", jwtToken), http.StatusTemporaryRedirect)
+	// The session lives in a cookie so the upstream editor is covered too; the
+	// token stays in the query as well, because the forked frontend reads it
+	// from there.
+	startSession(w, r, jwtToken)
+
+	target := takeReturn(w, r)
+	if target == "/" {
+		target = fmt.Sprintf("/?token=%s", jwtToken)
+	}
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 func HandleOIDCLogin(w http.ResponseWriter, r *http.Request) {
@@ -349,8 +421,16 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Redirect to frontend with token
-	http.Redirect(w, r, fmt.Sprintf("/?token=%s", jwtToken), http.StatusTemporaryRedirect)
+	// The session lives in a cookie so the upstream editor is covered too; the
+	// token stays in the query as well, because the forked frontend reads it
+	// from there.
+	startSession(w, r, jwtToken)
+
+	target := takeReturn(w, r)
+	if target == "/" {
+		target = fmt.Sprintf("/?token=%s", jwtToken)
+	}
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 func createJWT(user *core.User) (string, error) {

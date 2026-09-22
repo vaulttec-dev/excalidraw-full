@@ -137,6 +137,11 @@ func setupRouter(store stores.Store) *chi.Mux {
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	}))
 
+	// Everything below is gated behind a GitHub login once OAuth is configured:
+	// the upstream editor has no accounts of its own, so without this the whole
+	// instance — rooms included — would be open to anyone holding the URL.
+	r.Use(authMiddleware.RequireSession)
+
 	r.Route("/v1/projects/{project_id}/databases/{database_id}", func(r chi.Router) {
 		r.Post("/documents:commit", firebase.HandleBatchCommit(store))
 		r.Post("/documents:batchGet", firebase.HandleBatchGet(store))
