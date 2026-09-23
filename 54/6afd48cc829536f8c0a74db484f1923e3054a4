@@ -1,0 +1,26 @@
+main.go
+  s_c2ca996cae1f5e::t_89feb88dcaa6dd 259
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_9d7e683f8936ff 137-154
+middleware/session.go
+  s_c2ca996cae1f5e::t_4bc2d3547d1a80 30-32
+  s_c2ca996cae1f5e::t_9f18a4865692e8 13-15
+excalidraw-complete.Dockerfile
+  s_c2ca996cae1f5e::t_8cab340e9939c2 43-47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "546afd48cc829536f8c0a74db484f1923e3054a4",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
