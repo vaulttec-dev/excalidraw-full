@@ -1,0 +1,20 @@
+main.go
+  s_c2ca996cae1f5e::t_5a7c4cb7ceb671 360
+  s_c2ca996cae1f5e::t_58f23d2196e06a 342
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8bad33a7044d573e9a0b942c12dad2cb9add4240",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
