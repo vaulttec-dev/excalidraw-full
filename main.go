@@ -45,6 +45,55 @@ type (
 //go:embed all:frontend
 var assets embed.FS
 
+// autoRoomScript puts every session into a collaboration room, which is what
+// makes drawings land in the object store at all: the upstream editor has no
+// accounts and keeps a plain canvas in the browser's localStorage, syncing to
+// the backend only while a room is open.
+//
+// It runs before the editor's own bundle, so by the time that reads the hash the
+// room is already there and no reload is needed. The key is generated here, in
+// the browser, and only ever travels in the fragment — the server never receives
+// it and so cannot read the scenes it stores. The room is remembered so that
+// reopening the instance returns to the same board; "/?new" starts another one.
+const autoRoomScript = `<script>
+(function () {
+  // A hash already present means a room or a shared drawing: leave it alone.
+  if (location.hash.length > 1) return;
+
+  var STORAGE_KEY = "excalidraw-self-host-room";
+  var wantsNew = /[?&]new(=|&|$)/.test(location.search);
+
+  if (!wantsNew) {
+    try {
+      var saved = localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        location.hash = saved;
+        return;
+      }
+    } catch (e) {}
+  }
+
+  var toHex = function (bytes) {
+    return Array.prototype.map
+      .call(bytes, function (b) { return ("0" + b.toString(16)).slice(-2); })
+      .join("");
+  };
+
+  // The room key is a JWK "k" value: base64url of the raw 128 bit AES key.
+  var toBase64Url = function (bytes) {
+    var binary = String.fromCharCode.apply(null, bytes);
+    return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  };
+
+  var id = toHex(crypto.getRandomValues(new Uint8Array(10)));
+  var key = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+  var room = "#room=" + id + "," + key;
+
+  try { localStorage.setItem(STORAGE_KEY, room); } catch (e) {}
+  location.hash = room;
+})();
+</script>`
+
 func handleUI() http.HandlerFunc {
 	sub, err := fs.Sub(assets, "frontend")
 	if err != nil {
@@ -106,6 +155,10 @@ func handleUI() http.HandlerFunc {
 		modifiedContent := strings.ReplaceAll(string(fileContent), "firestore.googleapis.com", backendHost)
 		modifiedContent = strings.ReplaceAll(modifiedContent, "ssl=!0", "ssl=0")
 		modifiedContent = strings.ReplaceAll(modifiedContent, "ssl:!0", "ssl:0")
+
+		if strings.HasSuffix(path, ".html") {
+			modifiedContent = strings.Replace(modifiedContent, "<head>", "<head>"+autoRoomScript, 1)
+		}
 
 		// Set the correct Content-Type based on the file extension
 		contentType := http.DetectContentType([]byte(modifiedContent))
