@@ -1,0 +1,28 @@
+handlers/auth/allowlist.go
+  s_c2ca996cae1f5e::t_c1191739af622f 54,56-88
+  s_c2ca996cae1f5e::t_741398595019e2 48-50,53
+  s_c2ca996cae1f5e::t_ac82b394cbae68 55
+handlers/auth/auth.go
+  s_c2ca996cae1f5e::t_f16706c565966c 369-371,384
+  s_c2ca996cae1f5e::t_9bf528366b3c54 111-113
+  s_c2ca996cae1f5e::t_0c84ee17c5b96d 48-49
+  s_c2ca996cae1f5e::t_84e7d99323a6ca 488-489
+  s_c2ca996cae1f5e::t_ef6c6e752388c7 502-531,533
+  s_c2ca996cae1f5e::t_3480b99cbe5f1e 561
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cd3222d46ab5bbd36814870eaddb5c4372602019",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
