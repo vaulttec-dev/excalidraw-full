@@ -1,0 +1,48 @@
+go.mod
+  s_c2ca996cae1f5e::t_d043f29cd0b814 3,13,20,68,70-74,76
+  s_c2ca996cae1f5e::t_9acec566242bcc 9,15,45,59-60,64,75
+handlers/auth/auth.go
+  s_c2ca996cae1f5e::t_2d13fd8fefc88e 610-614
+  s_c2ca996cae1f5e::t_bde8aa512a5d9a 50-98
+handlers/oauth/oauth.go
+  s_c2ca996cae1f5e::t_f9e562671d938d 1-509
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_eb237213b2e48f 256-323,327-328
+middleware/session.go
+  s_c2ca996cae1f5e::t_c7a3653d30a5e8 43-44,46-47
+  s_c2ca996cae1f5e::t_fad36625a0fee7 64-68
+  s_c2ca996cae1f5e::t_bab047bdd97132 13-21
+  s_c2ca996cae1f5e::t_503e060a09b782 78-81
+handlers/mcpserver/server.go
+  s_c2ca996cae1f5e::t_c9496948f34754 218-219
+  s_c2ca996cae1f5e::t_30bd144f4fe4e9 1-13,15-217,220-331
+  s_c2ca996cae1f5e::t_f9303abcaeb67f 14
+handlers/api/firebase/firebase.go
+  s_c2ca996cae1f5e::t_69fae6da3ff7f9 233
+  s_c2ca996cae1f5e::t_4b3d2fa8e3bd7d 5-7,9,15
+  s_c2ca996cae1f5e::t_9d66da050de540 141-220,222-225
+handlers/mcpserver/scene.go
+  s_c2ca996cae1f5e::t_cf13c127f27f25 1-275
+main.go
+  s_c2ca996cae1f5e::t_2dce81b20b2d8b 485-490
+  s_c2ca996cae1f5e::t_3eb21479b599d2 286-296
+  s_c2ca996cae1f5e::t_befd66f1011e9e 13-14
+go.sum
+  s_c2ca996cae1f5e::t_9282a4f839801f 62-63,66-69,84-85,107-110,116-117,124-125,136-137,140-147,150-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "dfbb2515825058e39ef06c2df7dd620428219eb9",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
