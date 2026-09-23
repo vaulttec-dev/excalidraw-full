@@ -45,6 +45,8 @@ type AppClaims struct {
 	Email     string `json:"email,omitempty"`
 	AvatarURL string `json:"avatarUrl"`
 	Name      string `json:"name"`
+	// Orgs are the allowed organisations the account belonged to at sign-in.
+	Orgs []string `json:"orgs,omitempty"`
 }
 
 // OIDCClaims represents the claims from OIDC token
@@ -106,7 +108,9 @@ func initGitHub() {
 		ClientID:     os.Getenv("GITHUB_CLIENT_ID"),
 		ClientSecret: os.Getenv("GITHUB_CLIENT_SECRET"),
 		RedirectURL:  os.Getenv("GITHUB_REDIRECT_URL"),
-		Scopes:       []string{"read:user", "user:email"},
+		// read:org lets the callback see organisation membership, which is
+		// how ALLOWED_GITHUB_ORGS admits people.
+		Scopes: []string{"read:user", "user:email", "read:org"},
 		Endpoint:     github.Endpoint,
 	}
 
@@ -362,8 +366,9 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !IsLoginAllowed(githubUser.Login) {
-		logrus.WithField("login", githubUser.Login).Warn("rejected login: not in allowlist")
+	orgs := githubMemberships(client, githubUser.Login)
+	if !IsAccessAllowed(githubUser.Login, orgs) {
+		logrus.WithField("login", githubUser.Login).Warn("rejected login: not in the login allowlist or an allowed organisation")
 		http.Redirect(w, r, "/auth/denied", http.StatusTemporaryRedirect)
 		return
 	}
@@ -376,7 +381,7 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		Name:      githubUser.Name,
 	}
 
-	jwtToken, err := createJWT(user)
+	jwtToken, err := createJWT(user, orgs)
 	if err != nil {
 		logrus.Errorf("failed to create JWT: %s", err.Error())
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
@@ -480,7 +485,8 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jwtToken, err := createJWT(user)
+	// OIDC accounts have no GitHub organisations.
+	jwtToken, err := createJWT(user, nil)
 	if err != nil {
 		logrus.Errorf("failed to create JWT: %s", err.Error())
 		http.Redirect(w, r, "/", http.StatusTemporaryRedirect)
@@ -493,8 +499,38 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, takeReturn(w, r), http.StatusTemporaryRedirect)
 }
 
-func createJWT(user *core.User) (string, error) {
+// githubMemberships returns the allowed organisations the account is an active
+// member of. Only the configured organisations are asked about.
+func githubMemberships(client *http.Client, login string) []string {
+	var member []string
+	for _, org := range AllowedOrgs() {
+		resp, err := client.Get("https://api.github.com/user/memberships/orgs/" + url.PathEscape(org))
+		if err != nil {
+			logrus.WithError(err).WithField("org", org).Warn("failed to check organisation membership")
+			continue
+		}
+		var membership struct {
+			State string `json:"state"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&membership)
+		resp.Body.Close()
+
+		switch {
+		case resp.StatusCode == http.StatusOK && decodeErr == nil && membership.State == "active":
+			member = append(member, org)
+		case resp.StatusCode == http.StatusForbidden:
+			// Organisations that restrict third-party access hide membership
+			// from OAuth apps they have not approved.
+			logrus.WithFields(logrus.Fields{"org": org, "login": login}).
+				Warn("organisation membership hidden: the organisation may need to approve this OAuth app")
+		}
+	}
+	return member
+}
+
+func createJWT(user *core.User, orgs []string) (string, error) {
 	claims := AppClaims{
+		Orgs: orgs,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   user.Subject,
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour * 24 * 7)), // 1 week
@@ -522,7 +558,7 @@ func ParseJWT(tokenString string) (*AppClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*AppClaims); ok && token.Valid {
-		if !IsLoginAllowed(claims.Login) {
+		if !IsAccessAllowed(claims.Login, claims.Orgs) {
 			return nil, fmt.Errorf("login %q is not allowed on this instance", claims.Login)
 		}
 		return claims, nil
