@@ -297,12 +297,19 @@ func setupRouter(store stores.Store) *chi.Mux {
 	r.Route("/api/boards", func(r chi.Router) {
 		r.Get("/", boards.HandleList(store))
 		r.Put("/{id}", boards.HandlePut(store))
+		r.Put("/{id}/folder", boards.HandleMoveBoard(store))
 		r.Delete("/{id}", boards.HandleDelete(store))
 		r.Get("/{id}/versions", boards.HandleVersions(store))
 		r.Post("/{id}/versions/{version}/restore", boards.HandleRestoreVersion(store))
 		r.Get("/trash", boards.HandleTrash(store))
 		r.Post("/trash/{id}/restore", boards.HandleRestoreFromTrash(store))
 		r.Delete("/trash/{id}", boards.HandlePurge(store))
+	})
+	r.Route("/api/folders", func(r chi.Router) {
+		r.Get("/", boards.HandleFolders(store))
+		r.Post("/", boards.HandleCreateFolder(store))
+		r.Put("/{id}", boards.HandleRenameFolder(store))
+		r.Delete("/{id}", boards.HandleDeleteFolder(store))
 	})
 
 	// The editor's "Share → link" (#json=): an encrypted snapshot, not a room.
@@ -368,12 +375,10 @@ func setupSocketIO() *socketio.Server {
 		})
 		socket.On("server-broadcast", func(datas ...any) {
 			roomID := datas[0].(string)
-			utils.Log().Printf(" user %v sends update to room %v\n", me, roomID)
 			socket.Broadcast().To(socketio.Room(roomID)).Emit("client-broadcast", datas[1], datas[2])
 		})
 		socket.On("server-volatile-broadcast", func(datas ...any) {
 			roomID := datas[0].(string)
-			utils.Log().Printf(" user %v sends volatile update to room %v\n", me, roomID)
 			socket.Volatile().Broadcast().To(socketio.Room(roomID)).Emit("client-broadcast", datas[1], datas[2])
 		})
 

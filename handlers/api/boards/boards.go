@@ -53,6 +53,8 @@ var (
 type entry struct {
 	Key       string `json:"key"`
 	CreatedBy string `json:"createdBy"`
+	// Folder is the id of the folder the board is in; empty for none.
+	Folder string `json:"folder,omitempty"`
 }
 
 // record is a registry entry as held in memory.
@@ -75,6 +77,7 @@ type Board struct {
 	Key       string    `json:"key"`
 	Name      string    `json:"name"`
 	CreatedBy string    `json:"createdBy"`
+	Folder    string    `json:"folder,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	EditedAt  time.Time `json:"editedAt"`
 }
@@ -90,6 +93,7 @@ var registry = struct {
 	loaded  bool
 	records map[string]*record
 	trash   map[string]*trashed
+	folders map[string]*folder
 }{}
 
 // trashOwner is where deleted boards go. A deleted board keeps its key and
@@ -171,10 +175,15 @@ func ensureLoaded(ctx context.Context, store core.CanvasStore) error {
 	if err != nil {
 		return err
 	}
+	folders, err := readFolders(ctx, store)
+	if err != nil {
+		return err
+	}
 	seedEditTimes(ctx, store, records)
 
 	registry.records = records
 	registry.trash = trash
+	registry.folders = folders
 	registry.loaded = true
 	logrus.WithField("boards", len(records)).Info("Board list loaded")
 	return nil
@@ -333,6 +342,7 @@ func toBoard(id string, rec *record) Board {
 		Key:       rec.Key,
 		Name:      rec.name,
 		CreatedBy: rec.CreatedBy,
+		Folder:    rec.Folder,
 		CreatedAt: rec.createdAt,
 		EditedAt:  rec.createdAt,
 	}
@@ -596,6 +606,12 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 			}
 		}
 		rec := &record{entry: item.entry, name: item.name, createdAt: item.createdAt}
+		registry.mu.RLock()
+		if _, ok := registry.folders[rec.Folder]; !ok {
+			// Its folder was deleted meanwhile; it comes back outside any.
+			rec.Folder = ""
+		}
+		registry.mu.RUnlock()
 		if err := store.Save(ctx, rec.canvas(id)); err != nil {
 			http.Error(w, "failed to restore the board", http.StatusInternalServerError)
 			return

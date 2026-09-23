@@ -48,6 +48,7 @@ type listInput struct{}
 type createInput struct {
 	Name     string    `json:"name" jsonschema:"board title shown in the team's board list"`
 	Elements []Element `json:"elements" jsonschema:"elements in the compact notation described in the server instructions"`
+	Folder   string    `json:"folder,omitempty" jsonschema:"optional folder name to put the board in; created if there is none by that name"`
 }
 
 type readInput struct {
@@ -126,13 +127,23 @@ func (t *tools) listBoards(ctx context.Context, _ *mcp.CallToolRequest, _ listIn
 	if len(list) == 0 {
 		return textResult("No boards yet."), nil, nil
 	}
+	folderNames := map[string]string{}
+	if folders, err := boards.Folders(ctx, t.store); err == nil {
+		for _, f := range folders {
+			folderNames[f.ID] = f.Name
+		}
+	}
 	var b strings.Builder
 	for _, board := range list {
 		name := board.Name
 		if name == "" {
 			name = "(untitled)"
 		}
-		fmt.Fprintf(&b, "%s — by %s, edited %s\n%s\n\n", name, board.CreatedBy,
+		where := ""
+		if f, ok := folderNames[board.Folder]; ok {
+			where = fmt.Sprintf(" [folder: %s]", f)
+		}
+		fmt.Fprintf(&b, "%s%s — by %s, edited %s\n%s\n\n", name, where, board.CreatedBy,
 			board.EditedAt.Format(time.RFC3339), t.link(board.ID, board.Key))
 	}
 	return textResult("%s", strings.TrimSpace(b.String())), nil, nil
@@ -160,6 +171,17 @@ func (t *tools) createBoard(ctx context.Context, _ *mcp.CallToolRequest, in crea
 	}
 	if err := boards.Create(ctx, t.store, id, key, in.Name, t.author); err != nil {
 		return nil, nil, err
+	}
+	if folderRef := strings.TrimSpace(in.Folder); folderRef != "" {
+		f, ok := boards.FindFolder(ctx, t.store, folderRef)
+		if !ok {
+			if f, err = boards.CreateFolder(ctx, t.store, folderRef, t.author); err != nil {
+				return nil, nil, fmt.Errorf("board created, but not its folder: %w", err)
+			}
+		}
+		if err := boards.MoveBoard(ctx, t.store, id, f.ID); err != nil {
+			return nil, nil, fmt.Errorf("board created, but not put in its folder: %w", err)
+		}
 	}
 	return textResult("Board %q created with %d elements.\n%s", in.Name, len(elements), t.link(id, key)), nil, nil
 }
