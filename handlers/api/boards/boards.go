@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"excalidraw-complete/core"
 	"excalidraw-complete/handlers/api/firebase"
+	"excalidraw-complete/handlers/api/history"
+	"excalidraw-complete/handlers/api/scene"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/middleware"
 	"fmt"
@@ -96,7 +98,25 @@ var registry = struct {
 	mu      sync.RWMutex
 	loaded  bool
 	records map[string]*record
+	trash   map[string]*trashed
 }{}
+
+// trashOwner is where deleted boards go. A deleted board keeps its key and
+// name there, and its last content as a version (see handlers/api/history), so
+// it can be brought back.
+const trashOwner = "trash"
+
+type trashEntry struct {
+	entry
+	DeletedBy string `json:"deletedBy"`
+}
+
+type trashed struct {
+	trashEntry
+	name      string
+	createdAt time.Time
+	deletedAt time.Time
+}
 
 // Preload reads the registry in the background, so the first request after a
 // restart does not wait for it.
@@ -126,9 +146,14 @@ func ensureLoaded(ctx context.Context, store core.CanvasStore) error {
 	if err != nil {
 		return err
 	}
+	trash, err := readTrash(ctx, store)
+	if err != nil {
+		return err
+	}
 	seedEditTimes(ctx, store, records)
 
 	registry.records = records
+	registry.trash = trash
 	registry.loaded = true
 	logrus.WithField("boards", len(records)).Info("Board list loaded")
 	return nil
@@ -176,13 +201,14 @@ func listIDs(ctx context.Context, store core.CanvasStore, userID string) ([]stri
 	return ids, nil
 }
 
-func readRegistry(ctx context.Context, store core.CanvasStore) (map[string]*record, error) {
-	ids, err := listIDs(ctx, store, owner)
+// readAll reads every canvas under a namespace, a few at a time.
+func readAll(ctx context.Context, store core.CanvasStore, namespace string) (map[string]*core.Canvas, error) {
+	ids, err := listIDs(ctx, store, namespace)
 	if err != nil {
 		return nil, err
 	}
 
-	records := make(map[string]*record, len(ids))
+	canvases := make(map[string]*core.Canvas, len(ids))
 	var (
 		mu  sync.Mutex
 		wg  sync.WaitGroup
@@ -195,23 +221,50 @@ func readRegistry(ctx context.Context, store core.CanvasStore) (map[string]*reco
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			canvas, err := store.Get(ctx, owner, id)
+			canvas, err := store.Get(ctx, namespace, id)
 			if err != nil || canvas == nil {
-				logrus.WithError(err).WithField("board", id).Warn("failed to read board entry")
+				logrus.WithError(err).WithFields(logrus.Fields{"namespace": namespace, "id": id}).Warn("failed to read entry")
 				return
 			}
-			var e entry
-			if json.Unmarshal(canvas.Data, &e) != nil || e.Key == "" {
-				return
-			}
-
 			mu.Lock()
-			records[id] = &record{entry: e, name: canvas.Name, createdAt: canvas.CreatedAt}
+			canvases[id] = canvas
 			mu.Unlock()
 		}(id)
 	}
 	wg.Wait()
+	return canvases, nil
+}
+
+func readRegistry(ctx context.Context, store core.CanvasStore) (map[string]*record, error) {
+	canvases, err := readAll(ctx, store, owner)
+	if err != nil {
+		return nil, err
+	}
+	records := make(map[string]*record, len(canvases))
+	for id, canvas := range canvases {
+		var e entry
+		if json.Unmarshal(canvas.Data, &e) != nil || e.Key == "" {
+			continue
+		}
+		records[id] = &record{entry: e, name: canvas.Name, createdAt: canvas.CreatedAt}
+	}
 	return records, nil
+}
+
+func readTrash(ctx context.Context, store core.CanvasStore) (map[string]*trashed, error) {
+	canvases, err := readAll(ctx, store, trashOwner)
+	if err != nil {
+		return nil, err
+	}
+	items := make(map[string]*trashed, len(canvases))
+	for id, canvas := range canvases {
+		var t trashEntry
+		if json.Unmarshal(canvas.Data, &t) != nil || t.Key == "" {
+			continue
+		}
+		items[id] = &trashed{trashEntry: t, name: canvas.Name, createdAt: canvas.CreatedAt, deletedAt: canvas.UpdatedAt}
+	}
+	return items, nil
 }
 
 // seedEditTimes learns when each board was last saved from the store's object
@@ -366,7 +419,16 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 
 		registry.mu.RLock()
 		existing := registry.records[id]
+		_, inTrash := registry.trash[id]
 		registry.mu.RUnlock()
+
+		// A tab that still has a deleted board open would otherwise list it
+		// again, empty and untitled, the next time it loads. Deleted boards
+		// come back only through the trash.
+		if existing == nil && inTrash {
+			http.Error(w, "board is in the trash", http.StatusGone)
+			return
+		}
 
 		var next record
 		status := http.StatusCreated
@@ -405,29 +467,187 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 	}
 }
 
-// HandleDelete removes a board: its entry and the scene stored for its room.
+// HandleDelete moves a board to the trash. Its last content is kept as a
+// version first; if that cannot be written, the board is not deleted.
 func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		id := chi.URLParam(r, "id")
 		if !roomIDPattern.MatchString(id) {
 			http.Error(w, "invalid room id", http.StatusBadRequest)
 			return
 		}
-		if err := ensureLoaded(r.Context(), store); err != nil {
+		if err := ensureLoaded(ctx, store); err != nil {
 			unavailable(w, err)
 			return
 		}
-		if err := firebase.DeleteScene(r.Context(), store, id); err != nil {
+		registry.mu.RLock()
+		rec := registry.records[id]
+		registry.mu.RUnlock()
+		if rec == nil {
+			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+
+		if fields, ok := firebase.LoadScene(ctx, store, id); ok {
+			if err := history.Snapshot(ctx, store, id, fields); err != nil {
+				logrus.WithError(err).WithField("board", id).Error("failed to keep the board before deleting it")
+				http.Error(w, "failed to keep the board's content; nothing was deleted", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		item := &trashed{
+			trashEntry: trashEntry{entry: rec.entry, DeletedBy: author(r)},
+			name:       rec.name,
+			createdAt:  rec.createdAt,
+			deletedAt:  time.Now(),
+		}
+		data, _ := json.Marshal(item.trashEntry)
+		if err := store.Save(ctx, &core.Canvas{ID: id, UserID: trashOwner, Name: rec.name, Data: data, CreatedAt: rec.createdAt}); err != nil {
+			http.Error(w, "failed to move the board to the trash", http.StatusInternalServerError)
+			return
+		}
+		if err := firebase.DeleteScene(ctx, store, id); err != nil {
 			logrus.WithError(err).WithField("board", id).Warn("failed to delete board scene")
 		}
-		if err := store.Delete(r.Context(), owner, id); err != nil {
+		if err := store.Delete(ctx, owner, id); err != nil {
 			http.Error(w, "failed to delete board", http.StatusInternalServerError)
 			return
 		}
 
 		registry.mu.Lock()
 		delete(registry.records, id)
+		registry.trash[id] = item
 		registry.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// TrashedBoard is a deleted board as the trash lists it.
+type TrashedBoard struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	CreatedBy string    `json:"createdBy"`
+	DeletedBy string    `json:"deletedBy"`
+	DeletedAt time.Time `json:"deletedAt"`
+}
+
+// HandleTrash lists deleted boards, most recently deleted first.
+func HandleTrash(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		registry.mu.RLock()
+		items := make([]TrashedBoard, 0, len(registry.trash))
+		for id, t := range registry.trash {
+			items = append(items, TrashedBoard{ID: id, Name: t.name, CreatedBy: t.CreatedBy, DeletedBy: t.DeletedBy, DeletedAt: t.deletedAt})
+		}
+		registry.mu.RUnlock()
+		sort.Slice(items, func(i, j int) bool { return items[i].DeletedAt.After(items[j].DeletedAt) })
+		render.JSON(w, r, items)
+	}
+}
+
+// HandleRestoreFromTrash brings a deleted board back with its last content.
+func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id := chi.URLParam(r, "id")
+		if err := ensureLoaded(ctx, store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		registry.mu.RLock()
+		item := registry.trash[id]
+		registry.mu.RUnlock()
+		if item == nil {
+			http.Error(w, "no such board in the trash", http.StatusNotFound)
+			return
+		}
+
+		if fields, ok := history.Latest(ctx, store, id); ok {
+			if err := firebase.StoreScene(ctx, store, id, fields); err != nil {
+				http.Error(w, "failed to restore the board's content", http.StatusInternalServerError)
+				return
+			}
+		}
+		rec := &record{entry: item.entry, name: item.name, createdAt: item.createdAt}
+		if err := store.Save(ctx, rec.canvas(id)); err != nil {
+			http.Error(w, "failed to restore the board", http.StatusInternalServerError)
+			return
+		}
+		if err := store.Delete(ctx, trashOwner, id); err != nil {
+			logrus.WithError(err).WithField("board", id).Warn("failed to clear the trash entry")
+		}
+
+		registry.mu.Lock()
+		registry.records[id] = rec
+		delete(registry.trash, id)
+		registry.mu.Unlock()
+		render.JSON(w, r, toBoard(id, rec))
+	}
+}
+
+// HandleVersions lists a board's stored versions, newest first.
+func HandleVersions(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if _, ok := Find(r.Context(), store, id); !ok {
+			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+		versions, err := history.List(r.Context(), store, id)
+		if err != nil {
+			http.Error(w, "failed to list versions", http.StatusInternalServerError)
+			return
+		}
+		render.JSON(w, r, versions)
+	}
+}
+
+// HandleRestoreVersion makes a stored version the board's content again. The
+// content it replaces is kept as a version first, so a restore can be undone,
+// and the change reaches open tabs live, with versions they will accept.
+func HandleRestoreVersion(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id := chi.URLParam(r, "id")
+		board, ok := Find(ctx, store, id)
+		if !ok {
+			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+		fields, err := history.Load(ctx, store, id, chi.URLParam(r, "version"))
+		if err != nil {
+			http.Error(w, "no such version", http.StatusNotFound)
+			return
+		}
+		target, err := scene.Decode(board.Key, fields)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		current, err := scene.Load(ctx, store, id, board.Key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if currentFields, ok := firebase.LoadScene(ctx, store, id); ok {
+			if err := history.Snapshot(ctx, store, id, currentFields); err != nil {
+				http.Error(w, "failed to keep the current version; nothing was restored", http.StatusInternalServerError)
+				return
+			}
+		}
+
+		next, changed := scene.ReplaceWith(current, scene.Visible(target))
+		if err := scene.Save(ctx, store, id, board.Key, next); err != nil {
+			http.Error(w, "failed to restore the version", http.StatusInternalServerError)
+			return
+		}
+		scene.Announce(id, board.Key, changed)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

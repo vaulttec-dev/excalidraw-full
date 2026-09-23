@@ -10,9 +10,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"excalidraw-complete/core"
+	"excalidraw-complete/handlers/api/history"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -280,6 +282,10 @@ func saveRoomCtx(ctx context.Context, store core.CanvasStore, documentPath strin
 	rooms.fields[documentPath] = fields
 	rooms.edited[documentPath] = now
 	rooms.mu.Unlock()
+
+	if store != nil && strings.HasPrefix(documentPath, DocumentPath("")) {
+		history.MaybeSnapshot(store, strings.TrimPrefix(documentPath, DocumentPath("")), fields)
+	}
 	return nil
 }
 

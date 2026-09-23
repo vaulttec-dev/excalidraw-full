@@ -17,6 +17,8 @@ import (
 	"excalidraw-complete/core"
 	"excalidraw-complete/handlers/api/boards"
 	"excalidraw-complete/handlers/api/firebase"
+	"excalidraw-complete/handlers/api/history"
+	"excalidraw-complete/handlers/api/scene"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/middleware"
 	"fmt"
@@ -26,12 +28,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/sirupsen/logrus"
 )
-
-// Broadcaster sends an encrypted update to everyone in a room, as the
-// collaboration server relays a browser's changes ("client-broadcast").
-type Broadcaster func(room string, ciphertext, iv []byte)
 
 const instructions = `Tools for the team's Excalidraw whiteboard. Every board is shared: whatever is drawn here appears for everyone who has the board open, live, and stays in the board list under the given name.
 
@@ -67,10 +64,9 @@ var roomLink = regexp.MustCompile(`#room=([0-9a-f]{20}),([A-Za-z0-9_-]{22})`)
 var roomID = regexp.MustCompile(`^[0-9a-f]{20}$`)
 
 type tools struct {
-	store     core.CanvasStore
-	broadcast Broadcaster
-	baseURL   string
-	author    string
+	store   core.CanvasStore
+	baseURL string
+	author  string
 }
 
 func textResult(format string, args ...any) *mcp.CallToolResult {
@@ -122,65 +118,6 @@ func (t *tools) resolve(ctx context.Context, ref string) (id, key, name string, 
 	}
 }
 
-func (t *tools) load(ctx context.Context, id, key string) ([]Element, error) {
-	fields, ok := firebase.LoadScene(ctx, t.store, id)
-	if !ok {
-		return nil, nil
-	}
-	plain, err := firebase.DecryptElements(key, fields)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read the board: wrong key or damaged scene")
-	}
-	var elements []Element
-	if err := json.Unmarshal(plain, &elements); err != nil {
-		return nil, err
-	}
-	return elements, nil
-}
-
-func (t *tools) save(ctx context.Context, id, key string, elements []Element) error {
-	plain, err := json.Marshal(elements)
-	if err != nil {
-		return err
-	}
-	fields, err := firebase.EncryptElements(key, plain, sceneVersion(elements))
-	if err != nil {
-		return err
-	}
-	return firebase.StoreScene(ctx, t.store, id, fields)
-}
-
-// announce sends changed elements to everyone with the board open. The editor
-// reconciles them by version, as it does a collaborator's update.
-func (t *tools) announce(id, key string, changed []Element) {
-	if t.broadcast == nil || len(changed) == 0 {
-		return
-	}
-	payload, err := json.Marshal(map[string]any{
-		"type":    "SCENE_UPDATE",
-		"payload": map[string]any{"elements": changed},
-	})
-	if err != nil {
-		return
-	}
-	ciphertext, iv, err := firebase.Seal(key, payload)
-	if err != nil {
-		logrus.WithError(err).Warn("failed to encrypt live update")
-		return
-	}
-	t.broadcast(id, ciphertext, iv)
-}
-
-func visible(elements []Element) []Element {
-	out := make([]Element, 0, len(elements))
-	for _, el := range elements {
-		if deleted, _ := el["isDeleted"].(bool); !deleted {
-			out = append(out, el)
-		}
-	}
-	return out
-}
-
 func (t *tools) listBoards(ctx context.Context, _ *mcp.CallToolRequest, _ listInput) (*mcp.CallToolResult, any, error) {
 	list, err := boards.Snapshot(ctx, t.store)
 	if err != nil {
@@ -218,7 +155,7 @@ func (t *tools) createBoard(ctx context.Context, _ *mcp.CallToolRequest, in crea
 	// The room key is a JWK "k" value: base64url of the raw 128 bit AES key.
 	key := base64.RawURLEncoding.EncodeToString(keyBytes)
 
-	if err := t.save(ctx, id, key, elements); err != nil {
+	if err := scene.Save(ctx, t.store, id, key, elements); err != nil {
 		return nil, nil, err
 	}
 	if err := boards.Create(ctx, t.store, id, key, in.Name, t.author); err != nil {
@@ -232,11 +169,11 @@ func (t *tools) readBoard(ctx context.Context, _ *mcp.CallToolRequest, in readIn
 	if err != nil {
 		return nil, nil, err
 	}
-	elements, err := t.load(ctx, id, key)
+	elements, err := scene.Load(ctx, t.store, id, key)
 	if err != nil {
 		return nil, nil, err
 	}
-	shown := visible(elements)
+	shown := scene.Visible(elements)
 	if len(shown) == 0 {
 		return textResult("Board %q is empty.", name), nil, nil
 	}
@@ -256,7 +193,7 @@ func (t *tools) updateBoard(ctx context.Context, _ *mcp.CallToolRequest, in upda
 	if err != nil {
 		return nil, nil, err
 	}
-	current, err := t.load(ctx, id, key)
+	current, err := scene.Load(ctx, t.store, id, key)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -265,56 +202,56 @@ func (t *tools) updateBoard(ctx context.Context, _ *mcp.CallToolRequest, in upda
 		return nil, nil, err
 	}
 
-	byID := make(map[string]Element, len(current))
-	for _, el := range current {
-		byID[text(el["id"])] = el
-	}
-	replaced := make(map[string]bool)
-	// An element given with the id of one already on the board supersedes it;
-	// its version has to be higher for the editor to take it.
-	for _, el := range added {
-		if old, ok := byID[text(el["id"])]; ok {
-			el["version"] = int(number(old["version"], 1)) + 1
-			el["index"] = old["index"]
-			replaced[text(el["id"])] = true
-		}
-	}
-
 	var next, changed []Element
-	for _, el := range current {
-		if replaced[text(el["id"])] {
-			continue
+	if mode == "replace" {
+		// A redraw throws the board's content away, so the state before it is
+		// kept as a version first.
+		if fields, ok := firebase.LoadScene(ctx, t.store, id); ok {
+			if err := history.Snapshot(ctx, t.store, id, fields); err != nil {
+				return nil, nil, fmt.Errorf("could not keep the current version before redrawing: %w", err)
+			}
 		}
-		if deleted, _ := el["isDeleted"].(bool); mode == "replace" && !deleted {
-			// Deleting is itself a change the editor has to win against the
-			// copy in each open tab, hence a new version.
-			el["isDeleted"] = true
-			el["version"] = int(number(el["version"], 1)) + 1
-			el["versionNonce"] = randomInt()
-			el["updated"] = time.Now().UnixMilli()
-			changed = append(changed, el)
+		next, changed = scene.ReplaceWith(current, added)
+	} else {
+		byID := make(map[string]Element, len(current))
+		for _, el := range current {
+			byID[text(el["id"])] = el
 		}
-		next = append(next, el)
+		replaced := make(map[string]bool)
+		// An element given with the id of one already on the board supersedes
+		// it; its version has to be higher for the editor to take it.
+		for _, el := range added {
+			if old, ok := byID[text(el["id"])]; ok {
+				el["version"] = int(number(old["version"], 1)) + 1
+				el["index"] = old["index"]
+				replaced[text(el["id"])] = true
+			}
+		}
+		for _, el := range current {
+			if !replaced[text(el["id"])] {
+				next = append(next, el)
+			}
+		}
+		next = append(next, added...)
+		changed = added
 	}
-	next = append(next, added...)
-	changed = append(changed, added...)
 
-	if err := t.save(ctx, id, key, next); err != nil {
+	if err := scene.Save(ctx, t.store, id, key, next); err != nil {
 		return nil, nil, err
 	}
-	t.announce(id, key, changed)
-	return textResult("Board %q updated (%s): %d elements on it now.\n%s", name, mode, len(visible(next)), t.link(id, key)), nil, nil
+	scene.Announce(id, key, changed)
+	return textResult("Board %q updated (%s): %d elements on it now.\n%s", name, mode, len(scene.Visible(next)), t.link(id, key)), nil, nil
 }
 
 // NewHandler serves the MCP endpoint. It is stateless, so a restart drops no
 // session, and each request gets tools bound to its caller and origin.
-func NewHandler(store core.CanvasStore, broadcast Broadcaster) http.Handler {
+func NewHandler(store core.CanvasStore) http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		author := "Claude"
 		if claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims); ok && claims != nil && claims.Login != "" {
 			author = claims.Login
 		}
-		t := &tools{store: store, broadcast: broadcast, baseURL: middleware.BaseURL(r), author: author}
+		t := &tools{store: store, baseURL: middleware.BaseURL(r), author: author}
 
 		server := mcp.NewServer(&mcp.Implementation{Name: "excalidraw-team", Title: "Excalidraw команди", Version: "1.0.0"},
 			&mcp.ServerOptions{Instructions: instructions})

@@ -8,6 +8,7 @@ import (
 	"excalidraw-complete/handlers/api/firebase"
 	"excalidraw-complete/handlers/api/kv"
 	"excalidraw-complete/handlers/api/me"
+	"excalidraw-complete/handlers/api/scene"
 	"excalidraw-complete/handlers/api/openai"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/handlers/mcpserver"
@@ -101,6 +102,14 @@ const autoRoomScript = `<script>
     credentials: "same-origin",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key: room[2] }),
+  }).then(function (response) {
+    // 410: the board was deleted. Leave it rather than write it back into
+    // storage; it can be restored from the trash.
+    if (response.status === 410) {
+      try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+      alert("Цю дошку видалено. Її можна відновити з кошика в панелі «Дошки».");
+      location.replace("/?new");
+    }
   }).catch(function () {});
 })();
 </script>`
@@ -304,6 +313,10 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Post("/import", boards.HandleImport(store))
 		r.Put("/{id}", boards.HandlePut(store))
 		r.Delete("/{id}", boards.HandleDelete(store))
+		r.Get("/{id}/versions", boards.HandleVersions(store))
+		r.Post("/{id}/versions/{version}/restore", boards.HandleRestoreVersion(store))
+		r.Get("/trash", boards.HandleTrash(store))
+		r.Post("/trash/{id}/restore", boards.HandleRestoreFromTrash(store))
 	})
 
 	r.Route("/api/v2", func(r chi.Router) {
@@ -485,9 +498,10 @@ func main() {
 
 	// MCP for Claude. Its changes reach people with a board open through the
 	// collaboration server, relayed like a browser's own updates.
-	r.Handle("/mcp", mcpserver.NewHandler(store, func(room string, ciphertext, iv []byte) {
+	scene.SetBroadcaster(func(room string, ciphertext, iv []byte) {
 		ioo.To(socketio.Room(room)).Emit("client-broadcast", ciphertext, iv)
-	}))
+	})
+	r.Handle("/mcp", mcpserver.NewHandler(store))
 	r.NotFound(handleUI())
 
 	logrus.WithField("addr", *listenAddress).Info("starting server")
