@@ -224,6 +224,64 @@ func startSession(w http.ResponseWriter, r *http.Request, jwtToken string) {
 	})
 }
 
+// HandleLogout ends the session. It lands on a page of its own rather than on
+// the editor: the editor is behind the login, and the browser still holds a
+// GitHub session, so going back there would sign the user straight back in.
+func HandleLogout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     SessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.Redirect(w, r, "/auth/signed-out", http.StatusSeeOther)
+}
+
+// HandleSignedOut is the page shown after signing out.
+func HandleSignedOut(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, signedOutPage)
+}
+
+const signedOutPage = `<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ви вийшли</title>
+<style>
+  :root { --bg: #f8f9fa; --surface: #fff; --text: #1b1b1f; --muted: #6b6b76; --border: #e4e4eb; --accent: #6965db; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #121214; --surface: #1c1c21; --text: #ececf1; --muted: #9a9aa6; --border: #2c2c34; --accent: #8b87ff; }
+  }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 16px; box-sizing: border-box; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 32px 28px;
+          max-width: 360px; width: 100%; text-align: center; }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { color: var(--muted); margin: 0 0 24px; }
+  a { display: inline-flex; align-items: center; gap: 8px; background: var(--accent); color: #fff; text-decoration: none;
+      padding: 10px 18px; border-radius: 10px; font-weight: 600; }
+  a:hover { filter: brightness(1.08); }
+  svg { width: 18px; height: 18px; fill: currentColor; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Ви вийшли</h1>
+    <p>Щоб повернутися до дошок, увійдіть через GitHub.</p>
+    <a href="/auth/login">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      Увійти через GitHub
+    </a>
+  </div>
+</body>
+</html>
+`
+
 func generateStateOauthCookie(w http.ResponseWriter) string {
 	b := make([]byte, 16)
 	rand.Read(b)

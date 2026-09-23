@@ -193,7 +193,15 @@ const page = `<!doctype html>
       remove.addEventListener("click", function () {
         var label = board.name || "Без назви";
         if (!confirm("Видалити дошку «" + label + "» разом із вмістом для всієї команди?")) return;
-        request("DELETE", "/api/boards/" + board.id).then(load, fail);
+        request("DELETE", "/api/boards/" + board.id).then(function () {
+          // Otherwise opening the instance would bring the deleted room back, empty.
+          try {
+            if ((localStorage.getItem(STORAGE_KEY) || "").indexOf(board.id) !== -1) {
+              localStorage.removeItem(STORAGE_KEY);
+            }
+          } catch (e) {}
+          return load();
+        }, fail);
       });
 
       actions.appendChild(copy);

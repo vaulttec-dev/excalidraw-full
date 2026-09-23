@@ -7,6 +7,7 @@ import (
 	"excalidraw-complete/handlers/api/documents"
 	"excalidraw-complete/handlers/api/firebase"
 	"excalidraw-complete/handlers/api/kv"
+	"excalidraw-complete/handlers/api/me"
 	"excalidraw-complete/handlers/api/openai"
 	"excalidraw-complete/handlers/auth"
 	authMiddleware "excalidraw-complete/middleware"
@@ -55,9 +56,8 @@ var assets embed.FS
 // room is already there and no reload is needed. The key is generated in the
 // browser. Every room opened here is registered in the shared board list (see
 // handlers/api/boards), which is what lets the team find boards without passing
-// links around, and a "Дошки" button leading to that list is laid over the
-// editor. The last room is remembered so that reopening the instance returns to
-// the same board; "/?new" starts another one.
+// links around. The last room is remembered so that reopening the instance
+// returns to the same board; "/?new" starts another one.
 const autoRoomScript = `<script>
 (function () {
   var STORAGE_KEY = "excalidraw-self-host-room";
@@ -99,28 +99,6 @@ const autoRoomScript = `<script>
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ key: room[2] }),
   }).catch(function () {});
-
-  var addButton = function () {
-    var style = document.createElement("style");
-    style.textContent =
-      ".sh-boards{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:5;" +
-      "padding:8px 16px;border-radius:10px;background:#6965db;color:#fff;text-decoration:none;" +
-      "font:600 14px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,.18)}" +
-      ".sh-boards:hover{filter:brightness(1.08)}" +
-      "@media (max-width:730px){.sh-boards{bottom:auto;top:64px}}";
-    var link = document.createElement("a");
-    link.className = "sh-boards";
-    link.href = "/boards";
-    link.textContent = "Дошки";
-    document.head.appendChild(style);
-    document.body.appendChild(link);
-  };
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", addButton);
-  } else {
-    addButton();
-  }
 })();
 </script>`
 
@@ -241,7 +219,10 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Post("/documents:batchGet", firebase.HandleBatchGet(store))
 	})
 
-	// The shared board list: the upstream editor has none of its own.
+	r.Get("/api/me", me.HandleMe)
+
+	// The shared board list. The editor shows it in its sidebar; the page is the
+	// same list outside the editor.
 	r.Get("/boards", boards.HandlePage)
 	r.Route("/api/boards", func(r chi.Router) {
 		r.Get("/", boards.HandleList(store))
@@ -277,6 +258,8 @@ func setupRouter(store stores.Store) *chi.Mux {
 	r.Route("/auth", func(r chi.Router) {
 		r.Get("/login", auth.HandleLogin)
 		r.Get("/callback", auth.HandleCallback)
+		r.Get("/logout", auth.HandleLogout)
+		r.Get("/signed-out", auth.HandleSignedOut)
 	})
 
 	return r
