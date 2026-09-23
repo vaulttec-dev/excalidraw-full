@@ -40,4 +40,9 @@ WORKDIR /root/
 COPY --from=backend-builder /app/main .
 # 暴露端口
 EXPOSE 3002
+# /healthz answers once the board list has been read from storage, so an
+# instance that cannot reach its bucket is reported unhealthy. The start period
+# covers that first read. wget comes with alpine's busybox.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget -q -O /dev/null http://127.0.0.1:3002/healthz || exit 1
 CMD ["./main"]

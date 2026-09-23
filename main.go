@@ -256,6 +256,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Post("/documents:batchGet", firebase.HandleBatchGet(store))
 	})
 
+	r.Get(authMiddleware.HealthPath, boards.HandleHealth(store))
 	r.Get("/api/me", me.HandleMe)
 
 	// The shared board list. The editor shows it in its sidebar; the page is the

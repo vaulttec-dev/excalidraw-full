@@ -10,6 +10,9 @@ import (
 	"strings"
 )
 
+// HealthPath is the health check endpoint; it tells nothing about the boards.
+const HealthPath = "/healthz"
+
 // apiTokenEnv lets non-browser clients — the MCP server writing scenes — through
 // the gate without a login round trip.
 const apiTokenEnv = "API_TOKEN"
@@ -24,8 +27,9 @@ func RequireSession(next http.Handler) http.Handler {
 			return
 		}
 
-		// The login round trip itself must stay reachable.
-		if strings.HasPrefix(r.URL.Path, "/auth/") {
+		// The login round trip itself must stay reachable, and so must the health
+		// check, which the container runtime calls without a session.
+		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == HealthPath {
 			next.ServeHTTP(w, r)
 			return
 		}

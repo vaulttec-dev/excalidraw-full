@@ -134,6 +134,24 @@ func ensureLoaded(ctx context.Context, store core.CanvasStore) error {
 	return nil
 }
 
+// HandleHealth reports whether the instance can serve boards: it answers once
+// the board list has been read from storage, which also proves the storage is
+// reachable with the configured credentials. Until then it answers 503, so a
+// container that cannot reach its bucket shows up as unhealthy rather than as
+// running with an empty board list.
+func HandleHealth(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		if err := ensureLoaded(ctx, store); err != nil {
+			http.Error(w, "storage unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
 func listIDs(ctx context.Context, store core.CanvasStore, userID string) ([]string, error) {
 	if lister, ok := store.(core.CanvasMetaLister); ok {
 		metas, err := lister.ListMeta(ctx, userID)
