@@ -1,0 +1,59 @@
+handlers/api/scene/scene.go
+  s_c2ca996cae1f5e::t_a35e36e356203f 1-158
+handlers/mcpserver/server.go
+  s_c2ca996cae1f5e::t_c78c09386ee81f 196,206-228,230-233,235-236,239,242-243
+  s_c2ca996cae1f5e::t_5b8b95650d24e6 172,176
+  s_c2ca996cae1f5e::t_f9696293d4c4cf 248
+  s_c2ca996cae1f5e::t_3cbf43d9820ebd 158
+  s_c2ca996cae1f5e::t_2a013f32e5f8f3 254
+  s_c2ca996cae1f5e::t_55eb356d8225c2 20-21
+  s_c2ca996cae1f5e::t_0748ca68a9fb85 67-69
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_4c291a63fdb75e 204-206,211,224,226,230,235-250,254-267
+  s_c2ca996cae1f5e::t_0750b64ecbd235 149-152,156
+  s_c2ca996cae1f5e::t_48515ea7228b2f 23-24
+  s_c2ca996cae1f5e::t_3668d0521b5320 422,425-431
+  s_c2ca996cae1f5e::t_27f79f655d2c87 268,470-471,474,480,484-511,514,521,527-650,652-653
+  s_c2ca996cae1f5e::t_3aa89af4075649 101,104-119
+  s_c2ca996cae1f5e::t_a411e8a646873d 120
+  s_c2ca996cae1f5e::t_03f7f5fe96c012 269
+  s_c2ca996cae1f5e::t_de23e05e61977d 432
+  s_c2ca996cae1f5e::t_4addd556b418c7 651
+  s_c2ca996cae1f5e::t_6d6ab4853d9bcd 654
+handlers/api/firebase/firebase.go
+  s_c2ca996cae1f5e::t_5e6edf9da384ad 13,17
+  s_c2ca996cae1f5e::t_07b5fec72041ff 285-288
+main.go
+  s_c2ca996cae1f5e::t_4f4989dcbdcc7a 11
+  s_c2ca996cae1f5e::t_730225835f4762 501,503-504
+  s_c2ca996cae1f5e::t_fa9a8bf5bb631f 105-112
+  s_c2ca996cae1f5e::t_e4ee8497c27f08 316-319
+handlers/api/history/history.go
+  s_c2ca996cae1f5e::t_7f756f0fc76ab7 1-133
+excalidraw
+  s_83b76625da7875::t_ec50f22d98a551 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "4d7953eb7f7d8d664b92321f7896b66618d860e2",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    },
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
