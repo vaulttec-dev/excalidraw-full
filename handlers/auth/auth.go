@@ -369,16 +369,10 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The session lives in a cookie so the upstream editor is covered too; the
-	// token stays in the query as well, because the forked frontend reads it
-	// from there.
+	// The session lives in a cookie only. The token is not put in the URL: it
+	// would stay in the browser history, and nothing reads it from there.
 	startSession(w, r, jwtToken)
-
-	target := takeReturn(w, r)
-	if target == "/" {
-		target = fmt.Sprintf("/?token=%s", jwtToken)
-	}
-	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, takeReturn(w, r), http.StatusTemporaryRedirect)
 }
 
 func HandleOIDCLogin(w http.ResponseWriter, r *http.Request) {
@@ -479,16 +473,10 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The session lives in a cookie so the upstream editor is covered too; the
-	// token stays in the query as well, because the forked frontend reads it
-	// from there.
+	// The session lives in a cookie only. The token is not put in the URL: it
+	// would stay in the browser history, and nothing reads it from there.
 	startSession(w, r, jwtToken)
-
-	target := takeReturn(w, r)
-	if target == "/" {
-		target = fmt.Sprintf("/?token=%s", jwtToken)
-	}
-	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
+	http.Redirect(w, r, takeReturn(w, r), http.StatusTemporaryRedirect)
 }
 
 func createJWT(user *core.User) (string, error) {
