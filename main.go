@@ -302,6 +302,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Post("/{id}/versions/{version}/restore", boards.HandleRestoreVersion(store))
 		r.Get("/trash", boards.HandleTrash(store))
 		r.Post("/trash/{id}/restore", boards.HandleRestoreFromTrash(store))
+		r.Delete("/trash/{id}", boards.HandlePurge(store))
 	})
 
 	// The editor's "Share → link" (#json=): an encrypted snapshot, not a room.

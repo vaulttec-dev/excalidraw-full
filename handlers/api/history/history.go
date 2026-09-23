@@ -122,6 +122,21 @@ func Load(ctx context.Context, store core.CanvasStore, room, id string) (interfa
 	return fields, nil
 }
 
+// Purge removes every stored version of a room.
+func Purge(ctx context.Context, store core.CanvasStore, room string) error {
+	versions, err := List(ctx, store, room)
+	if err != nil {
+		return err
+	}
+	for _, v := range versions {
+		if err := store.Delete(ctx, owner(room), v.ID); err != nil {
+			return err
+		}
+	}
+	lastSnapshot.Delete(room)
+	return nil
+}
+
 // Latest returns the newest version's scene fields, if there is one.
 func Latest(ctx context.Context, store core.CanvasStore, room string) (interface{}, bool) {
 	versions, err := List(ctx, store, room)

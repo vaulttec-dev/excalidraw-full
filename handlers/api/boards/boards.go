@@ -612,6 +612,48 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 	}
 }
 
+// HandlePurge deletes a board from the trash for good: its versions, its scene
+// and the trash entry. Only a board already in the trash can be purged, so a
+// board always passes through the trash first.
+func HandlePurge(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		id := chi.URLParam(r, "id")
+		if err := ensureLoaded(ctx, store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		registry.mu.RLock()
+		item := registry.trash[id]
+		registry.mu.RUnlock()
+		if item == nil {
+			http.Error(w, "no such board in the trash", http.StatusNotFound)
+			return
+		}
+
+		// Versions go first: if that fails half way, the entry stays in the
+		// trash and purging can be retried.
+		if err := history.Purge(ctx, store, id); err != nil {
+			logrus.WithError(err).WithField("board", id).Error("failed to delete board versions")
+			http.Error(w, "failed to delete the board's versions", http.StatusInternalServerError)
+			return
+		}
+		if err := firebase.DeleteScene(ctx, store, id); err != nil {
+			logrus.WithError(err).WithField("board", id).Warn("failed to delete board scene")
+		}
+		if err := store.Delete(ctx, trashOwner, id); err != nil {
+			http.Error(w, "failed to delete the trash entry", http.StatusInternalServerError)
+			return
+		}
+
+		registry.mu.Lock()
+		delete(registry.trash, id)
+		registry.mu.Unlock()
+		logrus.WithFields(logrus.Fields{"board": id, "name": item.name, "by": author(r)}).Info("board deleted for good")
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
 // HandleVersions lists a board's stored versions, newest first.
 func HandleVersions(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
