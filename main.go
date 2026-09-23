@@ -298,6 +298,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Get("/callback", auth.HandleCallback)
 		r.Get("/logout", auth.HandleLogout)
 		r.Get("/signed-out", auth.HandleSignedOut)
+		r.Get("/denied", auth.HandleDenied)
 	})
 
 	return r

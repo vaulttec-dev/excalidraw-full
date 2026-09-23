@@ -246,6 +246,20 @@ func HandleSignedOut(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, signedOutPage)
 }
 
+// HandleDenied is where a GitHub account outside the allowlist lands. Without it
+// the callback sent them back to the sign-in screen with no explanation.
+func HandleDenied(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusForbidden)
+	page := strings.Replace(signedOutPage, "<title>Ви вийшли</title>", "<title>Немає доступу</title>", 1)
+	page = strings.Replace(page, "<h1>Ви вийшли</h1>", "<h1>Немає доступу</h1>", 1)
+	page = strings.Replace(page,
+		"<p>Щоб повернутися до дошок, увійдіть через GitHub.</p>",
+		"<p>Цього GitHub-акаунта немає серед дозволених. Попросіть адміністратора додати ваш логін або увійдіть іншим акаунтом.</p>", 1)
+	_, _ = io.WriteString(w, page)
+}
+
 const signedOutPage = `<!doctype html>
 <html lang="uk">
 <head>
@@ -350,7 +364,7 @@ func HandleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 
 	if !IsLoginAllowed(githubUser.Login) {
 		logrus.WithField("login", githubUser.Login).Warn("rejected login: not in allowlist")
-		http.Redirect(w, r, "/?error=access_denied", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/auth/denied", http.StatusTemporaryRedirect)
 		return
 	}
 
@@ -462,7 +476,7 @@ func HandleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	if !IsLoginAllowed(user.Login) {
 		logrus.WithField("login", user.Login).Warn("rejected login: not in allowlist")
-		http.Redirect(w, r, "/?error=access_denied", http.StatusTemporaryRedirect)
+		http.Redirect(w, r, "/auth/denied", http.StatusTemporaryRedirect)
 		return
 	}
 
