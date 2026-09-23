@@ -1,0 +1,19 @@
+excalidraw
+  s_83b76625da7875::t_f457ab37f305e5 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d140f050526ef5c1be30014a3545dbc380cba355",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
