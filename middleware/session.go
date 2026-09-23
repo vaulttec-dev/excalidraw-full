@@ -28,8 +28,11 @@ func RequireSession(next http.Handler) http.Handler {
 		}
 
 		// The login round trip itself must stay reachable, and so must the health
-		// check, which the container runtime calls without a session.
-		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == HealthPath {
+		// check, which the container runtime calls without a session, and the
+		// service worker script: browsers fetch it without a session to update
+		// the worker, and it is what removes a stale one.
+		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == HealthPath ||
+			r.URL.Path == "/sw.js" || r.URL.Path == "/service-worker.js" {
 			next.ServeHTTP(w, r)
 			return
 		}

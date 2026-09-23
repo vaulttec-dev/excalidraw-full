@@ -123,7 +123,14 @@ func handleUI() http.HandlerFunc {
 		// already have; the cost is the offline mode, which an instance behind a
 		// login cannot offer anyway.
 		if path == "/sw.js" || path == "/service-worker.js" {
-			http.NotFound(w, r)
+			// A 404 is not reliably taken as "unregister", and a browser that
+			// still ran the previous frontend's worker kept serving that
+			// frontend from cache — which bounced between its own sign-in and
+			// ours forever. This worker replaces it, removes itself and its
+			// caches, and reloads the open tabs onto the current frontend.
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write([]byte(serviceWorkerKillSwitch))
 			return
 		}
 
@@ -202,6 +209,23 @@ func handleUI() http.HandlerFunc {
 		serveFile(w, path, file)
 	}
 }
+
+// serviceWorkerKillSwitch reloads the open tabs only when there were caches to
+// clear, i.e. when it replaced a worker that served pages from cache. The
+// current frontend registers /sw.js on every load too; reloading
+// unconditionally would put it in a reload loop.
+const serviceWorkerKillSwitch = `self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", (event) => {
+  event.waitUntil((async () => {
+    await self.registration.unregister();
+    const keys = await caches.keys();
+    await Promise.all(keys.map((key) => caches.delete(key)));
+    if (keys.length === 0) return;
+    const windows = await self.clients.matchAll({ type: "window" });
+    windows.forEach((client) => client.navigate(client.url));
+  })());
+});
+`
 
 // servedFile is a frontend file after the host rewrite, ready to send.
 type servedFile struct {
