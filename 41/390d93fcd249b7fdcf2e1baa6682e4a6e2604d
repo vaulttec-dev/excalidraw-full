@@ -1,0 +1,32 @@
+handlers/api/boards/page.go
+  s_c2ca996cae1f5e::t_0d84c3f972300b 1-282
+main.go
+  s_c2ca996cae1f5e::t_6c074125146fae 55-60,64-67,81-90,92-123
+  s_c2ca996cae1f5e::t_9e79186435e2a7 6
+  s_c2ca996cae1f5e::t_851834a1577510 244-250
+  s_c2ca996cae1f5e::t_ace0cb9829415f 242-243
+handlers/api/firebase/firebase.go
+  s_c2ca996cae1f5e::t_89c263b4e6227e 4
+  s_c2ca996cae1f5e::t_75b26c277fe82d 120-123
+  s_c2ca996cae1f5e::t_c1abde1d3223ec 136
+  s_c2ca996cae1f5e::t_4366baab00d2d1 64-82
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_a2916d0e6c0edb 189-191
+  s_c2ca996cae1f5e::t_81065860c05790 1-188,192-366
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "41390d93fcd249b7fdcf2e1baa6682e4a6e2604d",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
