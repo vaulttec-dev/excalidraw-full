@@ -47,6 +47,55 @@ type AppClaims struct {
 	Name      string `json:"name"`
 	// Orgs are the allowed organisations the account belonged to at sign-in.
 	Orgs []string `json:"orgs,omitempty"`
+	// Use marks tokens that are not access tokens — OAuth authorization codes
+	// and refresh tokens, which are signed with the same key. Empty means an
+	// access token, the only kind ParseJWT accepts.
+	Use string `json:"use,omitempty"`
+}
+
+// SignClaims signs claims with the instance's key.
+func SignClaims(claims AppClaims) (string, error) {
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(jwtSecret)
+}
+
+// ParseSigned reads a token signed by this instance whatever its use, for the
+// OAuth endpoints that exchange codes and refresh tokens. It checks only the
+// signature and expiry; callers check Use and access.
+func ParseSigned(tokenString string) (*AppClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &AppClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return jwtSecret, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	claims, ok := token.Claims.(*AppClaims)
+	if !ok || !token.Valid {
+		return nil, fmt.Errorf("invalid token")
+	}
+	return claims, nil
+}
+
+// SigningKey is the instance's key, for other signed values (OAuth client ids).
+func SigningKey() []byte { return jwtSecret }
+
+// ClaimsFromBearer identifies the caller behind an Authorization header: an
+// access token issued by this instance, or a person's GitHub token. It returns
+// nil for anything else, including the shared API token, which has no person.
+func ClaimsFromBearer(ctx context.Context, header string) *AppClaims {
+	bearer := strings.TrimSpace(strings.TrimPrefix(header, "Bearer"))
+	if bearer == "" {
+		return nil
+	}
+	if claims, err := ParseJWT(bearer); err == nil {
+		return claims
+	}
+	if claims, ok := VerifyGitHubToken(ctx, bearer); ok {
+		return claims
+	}
+	return nil
 }
 
 // OIDCClaims represents the claims from OIDC token
@@ -558,6 +607,11 @@ func ParseJWT(tokenString string) (*AppClaims, error) {
 	}
 
 	if claims, ok := token.Claims.(*AppClaims); ok && token.Valid {
+		// Codes and refresh tokens are signed with the same key; only a token
+		// issued for access may be used as one.
+		if claims.Use != "" {
+			return nil, fmt.Errorf("token is a %s, not an access token", claims.Use)
+		}
 		if !IsAccessAllowed(claims.Login, claims.Orgs) {
 			return nil, fmt.Errorf("login %q is not allowed on this instance", claims.Login)
 		}

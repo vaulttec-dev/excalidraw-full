@@ -253,33 +253,82 @@ func unavailable(w http.ResponseWriter, err error) {
 	http.Error(w, "board list unavailable", http.StatusServiceUnavailable)
 }
 
+func toBoard(id string, rec *record) Board {
+	board := Board{
+		ID:        id,
+		Key:       rec.Key,
+		Name:      rec.name,
+		CreatedBy: rec.CreatedBy,
+		CreatedAt: rec.createdAt,
+		EditedAt:  rec.createdAt,
+	}
+	if at, ok := firebase.EditedAt(id); ok && at.After(board.EditedAt) {
+		board.EditedAt = at
+	}
+	return board
+}
+
+// Snapshot returns every board, most recently edited first.
+func Snapshot(ctx context.Context, store core.CanvasStore) ([]Board, error) {
+	if err := ensureLoaded(ctx, store); err != nil {
+		return nil, err
+	}
+
+	registry.mu.RLock()
+	boards := make([]Board, 0, len(registry.records))
+	for id, rec := range registry.records {
+		boards = append(boards, toBoard(id, rec))
+	}
+	registry.mu.RUnlock()
+
+	sort.Slice(boards, func(i, j int) bool { return boards[i].EditedAt.After(boards[j].EditedAt) })
+	return boards, nil
+}
+
+// Find returns a listed board by its room id.
+func Find(ctx context.Context, store core.CanvasStore, id string) (Board, bool) {
+	if ensureLoaded(ctx, store) != nil {
+		return Board{}, false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	rec, ok := registry.records[id]
+	if !ok {
+		return Board{}, false
+	}
+	return toBoard(id, rec), true
+}
+
+// Create lists a new board.
+func Create(ctx context.Context, store core.CanvasStore, id, key, name, author string) error {
+	if !roomIDPattern.MatchString(id) || !roomKeyPattern.MatchString(key) {
+		return fmt.Errorf("invalid room id or key")
+	}
+	if err := ensureLoaded(ctx, store); err != nil {
+		return err
+	}
+	rec := &record{
+		entry:     entry{Key: key, CreatedBy: author},
+		name:      strings.TrimSpace(name),
+		createdAt: time.Now(),
+	}
+	if err := store.Save(ctx, rec.canvas(id)); err != nil {
+		return err
+	}
+	registry.mu.Lock()
+	registry.records[id] = rec
+	registry.mu.Unlock()
+	return nil
+}
+
 // HandleList returns every board, most recently edited first.
 func HandleList(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := ensureLoaded(r.Context(), store); err != nil {
+		boards, err := Snapshot(r.Context(), store)
+		if err != nil {
 			unavailable(w, err)
 			return
 		}
-
-		registry.mu.RLock()
-		boards := make([]Board, 0, len(registry.records))
-		for id, rec := range registry.records {
-			board := Board{
-				ID:        id,
-				Key:       rec.Key,
-				Name:      rec.name,
-				CreatedBy: rec.CreatedBy,
-				CreatedAt: rec.createdAt,
-				EditedAt:  rec.createdAt,
-			}
-			if at, ok := firebase.EditedAt(id); ok && at.After(board.EditedAt) {
-				board.EditedAt = at
-			}
-			boards = append(boards, board)
-		}
-		registry.mu.RUnlock()
-
-		sort.Slice(boards, func(i, j int) bool { return boards[i].EditedAt.After(boards[j].EditedAt) })
 		render.JSON(w, r, boards)
 	}
 }

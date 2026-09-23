@@ -10,6 +10,8 @@ import (
 	"excalidraw-complete/handlers/api/me"
 	"excalidraw-complete/handlers/api/openai"
 	"excalidraw-complete/handlers/auth"
+	"excalidraw-complete/handlers/mcpserver"
+	"excalidraw-complete/handlers/oauth"
 	authMiddleware "excalidraw-complete/middleware"
 	"excalidraw-complete/stores"
 	"flag"
@@ -281,6 +283,17 @@ func setupRouter(store stores.Store) *chi.Mux {
 	})
 
 	r.Get(authMiddleware.HealthPath, boards.HandleHealth(store))
+
+	// OAuth for MCP clients (see handlers/oauth). Some clients look the
+	// metadata up with the resource path appended, so both forms are served.
+	r.Get("/.well-known/oauth-protected-resource", oauth.HandleProtectedResource)
+	r.Get("/.well-known/oauth-protected-resource/mcp", oauth.HandleProtectedResource)
+	r.Get("/.well-known/oauth-authorization-server", oauth.HandleAuthorizationServer)
+	r.Get("/.well-known/oauth-authorization-server/mcp", oauth.HandleAuthorizationServer)
+	r.Post("/oauth/register", oauth.HandleRegister)
+	r.Get("/oauth/authorize", oauth.HandleAuthorize)
+	r.Post("/oauth/authorize", oauth.HandleAuthorize)
+	r.Post("/oauth/token", oauth.HandleToken)
 	r.Get("/api/me", me.HandleMe)
 
 	// The shared board list. The editor shows it in its sidebar; the page is the
@@ -469,6 +482,12 @@ func main() {
 
 	ioo := setupSocketIO()
 	r.Mount("/socket.io/", ioo.ServeHandler(nil))
+
+	// MCP for Claude. Its changes reach people with a board open through the
+	// collaboration server, relayed like a browser's own updates.
+	r.Handle("/mcp", mcpserver.NewHandler(store, func(room string, ciphertext, iv []byte) {
+		ioo.To(socketio.Room(room)).Emit("client-broadcast", ciphertext, iv)
+	}))
 	r.NotFound(handleUI())
 
 	logrus.WithField("addr", *listenAddress).Info("starting server")

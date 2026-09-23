@@ -2,12 +2,17 @@ package firebase
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"excalidraw-complete/core"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -133,7 +138,91 @@ func roomID(documentPath string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// LoadScene reads a room's stored scene fields.
+func LoadScene(ctx context.Context, store core.CanvasStore, room string) (interface{}, bool) {
+	return loadRoomCtx(ctx, store, DocumentPath(room))
+}
+
+// EncryptElements encrypts a scene's elements the way the editor does — AES-GCM
+// with the room's 128 bit key and a fresh 12 byte IV — and returns them as the
+// fields a room is stored with.
+func EncryptElements(roomKey string, elements []byte, sceneVersion int) (map[string]any, error) {
+	ciphertext, iv, err := Seal(roomKey, elements)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"sceneVersion": map[string]string{"integerValue": strconv.Itoa(sceneVersion)},
+		"iv":           map[string]string{"bytesValue": base64.StdEncoding.EncodeToString(iv)},
+		"ciphertext":   map[string]string{"bytesValue": base64.StdEncoding.EncodeToString(ciphertext)},
+	}, nil
+}
+
+// DecryptElements reverses EncryptElements.
+func DecryptElements(roomKey string, fields interface{}) ([]byte, error) {
+	var stored struct {
+		IV struct {
+			BytesValue string `json:"bytesValue"`
+		} `json:"iv"`
+		Ciphertext struct {
+			BytesValue string `json:"bytesValue"`
+		} `json:"ciphertext"`
+	}
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		return nil, err
+	}
+	iv, err := base64.StdEncoding.DecodeString(stored.IV.BytesValue)
+	if err != nil {
+		return nil, err
+	}
+	ciphertext, err := base64.StdEncoding.DecodeString(stored.Ciphertext.BytesValue)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := roomCipher(roomKey)
+	if err != nil {
+		return nil, err
+	}
+	return gcm.Open(nil, iv, ciphertext, nil)
+}
+
+// Seal encrypts data with a room's key under a fresh IV, as the editor does for
+// both stored scenes and live updates.
+func Seal(roomKey string, data []byte) (ciphertext, iv []byte, err error) {
+	gcm, err := roomCipher(roomKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	iv = make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(iv); err != nil {
+		return nil, nil, err
+	}
+	return gcm.Seal(nil, iv, data, nil), iv, nil
+}
+
+// roomCipher turns a room key — the JWK "k" value, base64url of a raw 128 bit
+// AES key — into AES-GCM.
+func roomCipher(roomKey string) (cipher.AEAD, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(roomKey)
+	if err != nil {
+		return nil, fmt.Errorf("invalid room key: %w", err)
+	}
+	block, err := aes.NewCipher(raw)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
 func loadRoom(r *http.Request, store core.CanvasStore, documentPath string) (interface{}, bool) {
+	return loadRoomCtx(r.Context(), store, documentPath)
+}
+
+func loadRoomCtx(ctx context.Context, store core.CanvasStore, documentPath string) (interface{}, bool) {
 	rooms.mu.RLock()
 	fields, ok := rooms.fields[documentPath]
 	rooms.mu.RUnlock()
@@ -141,7 +230,7 @@ func loadRoom(r *http.Request, store core.CanvasStore, documentPath string) (int
 		return fields, ok
 	}
 
-	canvas, err := store.Get(r.Context(), roomOwner, roomID(documentPath))
+	canvas, err := store.Get(ctx, roomOwner, roomID(documentPath))
 	if err != nil || canvas == nil {
 		return nil, false
 	}

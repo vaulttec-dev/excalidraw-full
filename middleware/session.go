@@ -10,6 +10,15 @@ import (
 	"strings"
 )
 
+// BaseURL is the public origin of the instance as the client reached it.
+func BaseURL(r *http.Request) string {
+	scheme := "http"
+	if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+		scheme = "https"
+	}
+	return scheme + "://" + r.Host
+}
+
 // HealthPath is the health check endpoint; it tells nothing about the boards.
 const HealthPath = "/healthz"
 
@@ -31,8 +40,11 @@ func RequireSession(next http.Handler) http.Handler {
 		// check, which the container runtime calls without a session, and the
 		// service worker script: browsers fetch it without a session to update
 		// the worker, and it is what removes a stale one.
+		// The OAuth endpoints MCP clients sign in through are public by nature;
+		// the one that needs a person checks the session itself.
 		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == HealthPath ||
-			r.URL.Path == "/sw.js" || r.URL.Path == "/service-worker.js" {
+			r.URL.Path == "/sw.js" || r.URL.Path == "/service-worker.js" ||
+			strings.HasPrefix(r.URL.Path, "/.well-known/") || strings.HasPrefix(r.URL.Path, "/oauth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -49,6 +61,11 @@ func RequireSession(next http.Handler) http.Handler {
 			return
 		}
 
+		// MCP clients discover where to sign in from this header.
+		if strings.HasPrefix(r.URL.Path, "/mcp") {
+			w.Header().Set("WWW-Authenticate",
+				`Bearer resource_metadata="`+BaseURL(r)+`/.well-known/oauth-protected-resource"`)
+		}
 		http.Error(w, "authentication required", http.StatusUnauthorized)
 	})
 }
@@ -57,6 +74,10 @@ func authorize(r *http.Request) (*auth.AppClaims, bool) {
 	if bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer")); bearer != "" {
 		if token := strings.TrimSpace(os.Getenv(apiTokenEnv)); token != "" && bearer == token {
 			return nil, true
+		}
+		// Access tokens this instance issued through OAuth, to MCP clients.
+		if claims, err := auth.ParseJWT(bearer); err == nil {
+			return claims, true
 		}
 		// Clients without a browser — the MCP server — sign in with the
 		// person's own GitHub token, held to the same allowlist as a browser
