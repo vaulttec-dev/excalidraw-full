@@ -1,0 +1,81 @@
+handlers/mcpserver/scene.go
+  s_c2ca996cae1f5e::t_d6fb66aa963c81 71-72,78-79
+middleware/session_test.go
+  s_c2ca996cae1f5e::t_bd9a4dad61de79 1-91
+handlers/auth/auth.go
+  s_c2ca996cae1f5e::t_e677dcb9236da9 312
+  s_c2ca996cae1f5e::t_2b84e9fd4f71a8 89,97-98,101,106
+  s_c2ca996cae1f5e::t_e1c6c42dc0ebcb 6
+  s_c2ca996cae1f5e::t_580369824e2732 74
+  s_c2ca996cae1f5e::t_bd7eba2cf761b4 244-250,252-257,259,262-272,274-275,278-279,285-289,293-294,299-303,305
+go.mod
+  s_c2ca996cae1f5e::t_5be1ac20b4fe9d 59
+.github/workflows/ci.yml
+  s_c2ca996cae1f5e::t_1542d013f0b222 1-33
+handlers/api/scene/scene_test.go
+  s_c2ca996cae1f5e::t_d9d9e053ef35c0 1-55
+handlers/oauth/oauth_test.go
+  s_c2ca996cae1f5e::t_2ed950d6ee24f8 13,15-17
+  s_c2ca996cae1f5e::t_b98d9b3076715f 6
+  s_c2ca996cae1f5e::t_e23d5093c9e0b0 1-5,7-12,14,18-68
+handlers/api/firebase/crypto_test.go
+  s_c2ca996cae1f5e::t_ef29e381597dc0 1-58
+handlers/auth/auth_test.go
+  s_c2ca996cae1f5e::t_4e1b4b00a466dd 1-27,30-90,95-113,117-153
+  s_c2ca996cae1f5e::t_6f98f0b7d16450 91-94
+  s_c2ca996cae1f5e::t_d705bf45e4e0d2 28-29
+  s_c2ca996cae1f5e::t_62c55349c3c6b1 114-116
+handlers/mcpserver/scene_test.go
+  s_c2ca996cae1f5e::t_6f6d3ac99c7ed7 1-64
+README.md
+  s_c2ca996cae1f5e::t_601cc11a8d8d1b 1,3-5,7,9-17,19-20,22,24,26,28-37,39,42,44-47,50-51,53,55,57-59,61,63,65,67-68,71-72,74,76
+  s_c2ca996cae1f5e::t_03f24405d4dce7 40
+handlers/auth/github_token.go
+  s_c2ca996cae1f5e::t_5d23f6d715c8b9 33-47
+  s_c2ca996cae1f5e::t_85edf1b72a035a 53-55
+  s_c2ca996cae1f5e::t_f6aeb289ef54b4 10
+.env.example
+  s_c2ca996cae1f5e::t_c25ed61c1eb0ef 1-4,6-7,9-11,13-22
+main.go
+  s_c2ca996cae1f5e::t_97a3128e373c55 152-153
+  s_c2ca996cae1f5e::t_50b6ff2cb50a48 307
+  s_c2ca996cae1f5e::t_96c05596d97d30 445
+  s_c2ca996cae1f5e::t_28858ea92a42bd 459
+  s_c2ca996cae1f5e::t_b4bc76b095a45a 379-381,383-398
+  s_c2ca996cae1f5e::t_efe7eddb5379ce 410-414,417-420
+  s_c2ca996cae1f5e::t_ec541a9540587b 430,432-440
+  s_c2ca996cae1f5e::t_5ffc167880aba1 117-121
+  s_c2ca996cae1f5e::t_f71fc0e7ea8c1b 192-197
+docker-compose.yml
+  s_c2ca996cae1f5e::t_f4f2f9c0f20b7c 1,4,7-9,11
+middleware/session.go
+  s_c2ca996cae1f5e::t_5686513b065370 52,55
+  s_c2ca996cae1f5e::t_7f698d2202fb5b 25-39
+  s_c2ca996cae1f5e::t_f77e3aa7a1e16e 83-87
+excalidraw
+  s_83b76625da7875::t_fd2f4d3129da26 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "076dda13e620e60df96e41a4fc260813953a5d76",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    },
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "unknown"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
