@@ -54,11 +54,17 @@ func RequireSession(next http.Handler) http.Handler {
 }
 
 func authorize(r *http.Request) (*auth.AppClaims, bool) {
-	if token := strings.TrimSpace(os.Getenv(apiTokenEnv)); token != "" {
-		header := r.Header.Get("Authorization")
-		if strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(header, "Bearer")), token) {
+	if bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer")); bearer != "" {
+		if token := strings.TrimSpace(os.Getenv(apiTokenEnv)); token != "" && bearer == token {
 			return nil, true
 		}
+		// Clients without a browser — the MCP server — sign in with the
+		// person's own GitHub token, held to the same allowlist as a browser
+		// login, so no secret has to be shared across the team.
+		if claims, ok := auth.VerifyGitHubToken(r.Context(), bearer); ok {
+			return claims, true
+		}
+		return nil, false
 	}
 
 	cookie, err := r.Cookie(auth.SessionCookieName)
