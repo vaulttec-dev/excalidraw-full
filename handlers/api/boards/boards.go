@@ -122,10 +122,40 @@ type trashed struct {
 // restart does not wait for it.
 func Preload(store core.CanvasStore) {
 	go func() {
-		if err := ensureLoaded(context.Background(), store); err != nil {
+		ctx := context.Background()
+		if err := ensureLoaded(ctx, store); err != nil {
 			logrus.WithError(err).Warn("failed to preload the board list; will retry on first request")
+			return
 		}
+		baselineVersions(ctx, store)
 	}()
+}
+
+// baselineVersions gives every board that has no version yet a first one, so a
+// board nobody has edited since versions were introduced is covered too.
+func baselineVersions(ctx context.Context, store core.CanvasStore) {
+	registry.mu.RLock()
+	ids := make([]string, 0, len(registry.records))
+	for id := range registry.records {
+		ids = append(ids, id)
+	}
+	registry.mu.RUnlock()
+
+	taken := 0
+	for _, id := range ids {
+		versions, err := history.List(ctx, store, id)
+		if err != nil || len(versions) > 0 {
+			continue
+		}
+		if fields, ok := firebase.LoadScene(ctx, store, id); ok {
+			if err := history.Snapshot(ctx, store, id, fields); err == nil {
+				taken++
+			}
+		}
+	}
+	if taken > 0 {
+		logrus.WithField("boards", taken).Info("Recorded first versions of boards")
+	}
 }
 
 func ensureLoaded(ctx context.Context, store core.CanvasStore) error {
