@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -44,6 +45,9 @@ const maxNameLength = 120
 // practice means the MCP server.
 const automatedAuthor = "Claude"
 
+// loadConcurrency bounds the parallel reads when the registry is loaded.
+const loadConcurrency = 8
+
 var (
 	roomIDPattern  = regexp.MustCompile(`^[0-9a-f]{20}$`)
 	roomKeyPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
@@ -58,7 +62,21 @@ type entry struct {
 	Source string `json:"source,omitempty"`
 }
 
-// Board is a registry entry as the list page sees it.
+// record is a registry entry as held in memory.
+type record struct {
+	entry
+	name      string
+	createdAt time.Time
+}
+
+func (r *record) canvas(id string) *core.Canvas {
+	data, _ := json.Marshal(r.entry)
+	// The creation time is passed along so the store does not read the object
+	// back to preserve it.
+	return &core.Canvas{ID: id, UserID: owner, Name: r.name, Data: data, CreatedAt: r.createdAt}
+}
+
+// Board is a registry entry as the list sees it.
 type Board struct {
 	ID        string    `json:"id"`
 	Key       string    `json:"key"`
@@ -66,6 +84,140 @@ type Board struct {
 	CreatedBy string    `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
 	EditedAt  time.Time `json:"editedAt"`
+}
+
+// registry holds the whole list in memory. Reading it from the object store
+// took a round trip per board, and the store is far enough away that the list
+// took well over a second with a single board in it. The instance runs as a
+// single process, so memory holds the current list; every change is written to
+// the store before it is acknowledged, and the list is read back from the store
+// once, at startup.
+var registry = struct {
+	mu      sync.RWMutex
+	loaded  bool
+	records map[string]*record
+}{}
+
+// Preload reads the registry in the background, so the first request after a
+// restart does not wait for it.
+func Preload(store core.CanvasStore) {
+	go func() {
+		if err := ensureLoaded(context.Background(), store); err != nil {
+			logrus.WithError(err).Warn("failed to preload the board list; will retry on first request")
+		}
+	}()
+}
+
+func ensureLoaded(ctx context.Context, store core.CanvasStore) error {
+	registry.mu.RLock()
+	loaded := registry.loaded
+	registry.mu.RUnlock()
+	if loaded {
+		return nil
+	}
+
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if registry.loaded {
+		return nil
+	}
+
+	records, err := readRegistry(ctx, store)
+	if err != nil {
+		return err
+	}
+	seedEditTimes(ctx, store, records)
+
+	registry.records = records
+	registry.loaded = true
+	logrus.WithField("boards", len(records)).Info("Board list loaded")
+	return nil
+}
+
+func listIDs(ctx context.Context, store core.CanvasStore, userID string) ([]string, error) {
+	if lister, ok := store.(core.CanvasMetaLister); ok {
+		metas, err := lister.ListMeta(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		ids := make([]string, 0, len(metas))
+		for _, meta := range metas {
+			ids = append(ids, meta.ID)
+		}
+		return ids, nil
+	}
+
+	canvases, err := store.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(canvases))
+	for _, canvas := range canvases {
+		ids = append(ids, canvas.ID)
+	}
+	return ids, nil
+}
+
+func readRegistry(ctx context.Context, store core.CanvasStore) (map[string]*record, error) {
+	ids, err := listIDs(ctx, store, owner)
+	if err != nil {
+		return nil, err
+	}
+
+	records := make(map[string]*record, len(ids))
+	var (
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, loadConcurrency)
+	)
+	for _, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			canvas, err := store.Get(ctx, owner, id)
+			if err != nil || canvas == nil {
+				logrus.WithError(err).WithField("board", id).Warn("failed to read board entry")
+				return
+			}
+			var e entry
+			if json.Unmarshal(canvas.Data, &e) != nil || e.Key == "" {
+				return
+			}
+
+			mu.Lock()
+			records[id] = &record{entry: e, name: canvas.Name, createdAt: canvas.CreatedAt}
+			mu.Unlock()
+		}(id)
+	}
+	wg.Wait()
+	return records, nil
+}
+
+// seedEditTimes learns when each board was last saved from the store's object
+// timestamps, in one listing. Saves made after startup are tracked as they
+// happen.
+func seedEditTimes(ctx context.Context, store core.CanvasStore, records map[string]*record) {
+	lister, ok := store.(core.CanvasMetaLister)
+	if !ok {
+		return
+	}
+	metas, err := lister.ListMeta(ctx, firebase.RoomOwner)
+	if err != nil {
+		logrus.WithError(err).Warn("failed to read when boards were last edited")
+		return
+	}
+	edited := make(map[string]time.Time, len(metas))
+	for _, meta := range metas {
+		edited[meta.ID] = meta.UpdatedAt
+	}
+	for id := range records {
+		if at, ok := edited[firebase.StorageID(id)]; ok {
+			firebase.SeedEditedAt(id, at)
+		}
+	}
 }
 
 func author(r *http.Request) string {
@@ -78,77 +230,45 @@ func author(r *http.Request) string {
 	return automatedAuthor
 }
 
-func readEntry(canvas *core.Canvas) (entry, bool) {
-	var e entry
-	if canvas == nil || json.Unmarshal(canvas.Data, &e) != nil || e.Key == "" {
-		return entry{}, false
-	}
-	return e, true
-}
-
-func load(ctx context.Context, store core.CanvasStore) ([]Board, map[string]entry, error) {
-	items, err := store.List(ctx, owner)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// A room is rewritten on every save, so its stored timestamp is the time of
-	// the last edit. One listing covers all of them.
-	edited := make(map[string]time.Time)
-	if rooms, err := store.List(ctx, firebase.RoomOwner); err == nil {
-		for _, room := range rooms {
-			edited[room.Name] = room.UpdatedAt
-		}
-	}
-
-	boards := make([]Board, 0, len(items))
-	entries := make(map[string]entry, len(items))
-	for _, item := range items {
-		// Listings leave the payload out, and the payload is where the key is.
-		full, err := store.Get(ctx, owner, item.ID)
-		if err != nil {
-			continue
-		}
-		e, ok := readEntry(full)
-		if !ok {
-			continue
-		}
-		entries[item.ID] = e
-
-		board := Board{
-			ID:        item.ID,
-			Key:       e.Key,
-			Name:      full.Name,
-			CreatedBy: e.CreatedBy,
-			CreatedAt: full.CreatedAt,
-			EditedAt:  full.CreatedAt,
-		}
-		if at, ok := edited[firebase.DocumentPath(item.ID)]; ok {
-			board.EditedAt = at
-		}
-		boards = append(boards, board)
-	}
-
-	sort.Slice(boards, func(i, j int) bool { return boards[i].EditedAt.After(boards[j].EditedAt) })
-	return boards, entries, nil
+func unavailable(w http.ResponseWriter, err error) {
+	logrus.WithError(err).Error("board list unavailable")
+	http.Error(w, "board list unavailable", http.StatusServiceUnavailable)
 }
 
 // HandleList returns every board, most recently edited first.
 func HandleList(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		boards, _, err := load(r.Context(), store)
-		if err != nil {
-			logrus.WithError(err).Error("failed to list boards")
-			http.Error(w, "failed to list boards", http.StatusInternalServerError)
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
 			return
 		}
+
+		registry.mu.RLock()
+		boards := make([]Board, 0, len(registry.records))
+		for id, rec := range registry.records {
+			board := Board{
+				ID:        id,
+				Key:       rec.Key,
+				Name:      rec.name,
+				CreatedBy: rec.CreatedBy,
+				CreatedAt: rec.createdAt,
+				EditedAt:  rec.createdAt,
+			}
+			if at, ok := firebase.EditedAt(id); ok && at.After(board.EditedAt) {
+				board.EditedAt = at
+			}
+			boards = append(boards, board)
+		}
+		registry.mu.RUnlock()
+
+		sort.Slice(boards, func(i, j int) bool { return boards[i].EditedAt.After(boards[j].EditedAt) })
 		render.JSON(w, r, boards)
 	}
 }
 
 // HandlePut registers a board, or renames one that is already listed. The
 // editor calls it on every load, so registering is idempotent and a plain
-// re-registration changes nothing.
+// re-registration changes nothing — and, served from memory, costs nothing.
 func HandlePut(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
@@ -164,6 +284,10 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "invalid room id or key", http.StatusBadRequest)
 			return
 		}
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
 
 		var name string
 		if body.Name != nil {
@@ -173,37 +297,44 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 			}
 		}
 
-		existing, err := store.Get(r.Context(), owner, id)
-		if e, ok := readEntry(existing); err == nil && ok {
+		registry.mu.RLock()
+		existing := registry.records[id]
+		registry.mu.RUnlock()
+
+		var next record
+		status := http.StatusCreated
+		if existing != nil {
 			// The key is fixed at registration. Accepting another one would let
 			// anybody who knows a room id point the list at a room they control.
-			if e.Key != body.Key {
+			if existing.Key != body.Key {
 				http.Error(w, "board is registered with another key", http.StatusConflict)
 				return
 			}
-			if body.Name == nil || name == existing.Name {
+			if body.Name == nil || name == existing.name {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-			existing.Name = name
-			// The owner is not part of a canvas's stored JSON, so a canvas read
-			// back has none; without it the save would land outside the registry.
-			existing.UserID = owner
-			if err := store.Save(r.Context(), existing); err != nil {
-				http.Error(w, "failed to rename board", http.StatusInternalServerError)
-				return
+			next = *existing
+			next.name = name
+			status = http.StatusNoContent
+		} else {
+			next = record{
+				entry:     entry{Key: body.Key, CreatedBy: author(r)},
+				name:      name,
+				createdAt: time.Now(),
 			}
-			w.WriteHeader(http.StatusNoContent)
+		}
+
+		if err := store.Save(r.Context(), next.canvas(id)); err != nil {
+			logrus.WithError(err).WithField("board", id).Error("failed to save board")
+			http.Error(w, "failed to save board", http.StatusInternalServerError)
 			return
 		}
 
-		data, _ := json.Marshal(entry{Key: body.Key, CreatedBy: author(r)})
-		if err := store.Save(r.Context(), &core.Canvas{ID: id, UserID: owner, Name: name, Data: data}); err != nil {
-			logrus.WithError(err).WithField("board", id).Error("failed to register board")
-			http.Error(w, "failed to register board", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusCreated)
+		registry.mu.Lock()
+		registry.records[id] = &next
+		registry.mu.Unlock()
+		w.WriteHeader(status)
 	}
 }
 
@@ -215,6 +346,10 @@ func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "invalid room id", http.StatusBadRequest)
 			return
 		}
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
 		if err := firebase.DeleteScene(r.Context(), store, id); err != nil {
 			logrus.WithError(err).WithField("board", id).Warn("failed to delete board scene")
 		}
@@ -222,6 +357,10 @@ func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "failed to delete board", http.StatusInternalServerError)
 			return
 		}
+
+		registry.mu.Lock()
+		delete(registry.records, id)
+		registry.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -251,23 +390,25 @@ func HandleImport(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "owner must be a previous account prefix, e.g. github:<id>", http.StatusBadRequest)
 			return
 		}
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
 
 		legacy, err := store.List(r.Context(), source)
 		if err != nil {
 			http.Error(w, "failed to list previous canvases", http.StatusInternalServerError)
 			return
 		}
-		_, entries, err := load(r.Context(), store)
-		if err != nil {
-			http.Error(w, "failed to list boards", http.StatusInternalServerError)
-			return
-		}
-		imported := make(map[string]bool, len(entries))
-		for _, e := range entries {
-			if e.Source != "" {
-				imported[e.Source] = true
+
+		imported := make(map[string]bool)
+		registry.mu.RLock()
+		for _, rec := range registry.records {
+			if rec.Source != "" {
+				imported[rec.Source] = true
 			}
 		}
+		registry.mu.RUnlock()
 
 		var result importResult
 		for _, item := range legacy {
@@ -299,13 +440,21 @@ func HandleImport(store core.CanvasStore) http.HandlerFunc {
 			if name == "" || name == item.ID {
 				name = "Стара дошка " + full.CreatedAt.Format("2006-01-02")
 			}
-			data, _ := json.Marshal(entry{Key: key, CreatedBy: author(r), Source: marker})
-			if err := store.Save(r.Context(), &core.Canvas{
-				ID: room, UserID: owner, Name: name, Data: data, CreatedAt: full.CreatedAt,
-			}); err != nil {
+			rec := &record{
+				entry:     entry{Key: key, CreatedBy: author(r), Source: marker},
+				name:      name,
+				createdAt: full.CreatedAt,
+			}
+			if rec.createdAt.IsZero() {
+				rec.createdAt = time.Now()
+			}
+			if err := store.Save(r.Context(), rec.canvas(room)); err != nil {
 				result.FailedNames = append(result.FailedNames, item.Name)
 				continue
 			}
+			registry.mu.Lock()
+			registry.records[room] = rec
+			registry.mu.Unlock()
 
 			result.Imported++
 			// Images of a room live in a storage this instance does not provide,

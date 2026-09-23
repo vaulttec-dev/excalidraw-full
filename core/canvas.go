@@ -17,6 +17,19 @@ type (
 		UpdatedAt time.Time `json:"updatedAt"`
 	}
 
+	// CanvasMeta is what a store can tell about a canvas without reading it.
+	CanvasMeta struct {
+		ID        string
+		UpdatedAt time.Time
+	}
+
+	// CanvasMetaLister is implemented by stores that can list canvases without
+	// reading each one. CanvasStore.List reads every object in full, which on a
+	// remote object store costs a round trip per canvas.
+	CanvasMetaLister interface {
+		ListMeta(ctx context.Context, userID string) ([]CanvasMeta, error)
+	}
+
 	// CanvasStore defines the persistence layer for user-owned canvases.
 	// All operations are scoped to a specific user.
 	CanvasStore interface {

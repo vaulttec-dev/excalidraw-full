@@ -20,6 +20,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/go-chi/chi/v5"
@@ -149,17 +150,26 @@ func handleUI() http.HandlerFunc {
 		}
 		defer f.Close()
 
+		// 替换为请求的url对应的domain，使其在反向代理或不同域名下也能正常工作。
+		backendHost := os.Getenv("EXCALIDRAW_BACKEND_HOST")
+		if backendHost == "" {
+			backendHost = r.Host
+		}
+
+		// The rewrite below runs over a 2 MB bundle; do it once per file and
+		// host rather than on every request.
+		cacheKey := backendHost + path
+		if cached, ok := servedFiles.Load(cacheKey); ok {
+			serveFile(w, path, cached.(servedFile))
+			return
+		}
+
 		fileContent, err := io.ReadAll(f)
 		if err != nil {
 			http.Error(w, "Error reading file", http.StatusInternalServerError)
 			return
 		}
 
-		// 替换为请求的url对应的domain，使其在反向代理或不同域名下也能正常工作。
-		backendHost := os.Getenv("EXCALIDRAW_BACKEND_HOST")
-		if backendHost == "" {
-			backendHost = r.Host
-		}
 		modifiedContent := strings.ReplaceAll(string(fileContent), "firestore.googleapis.com", backendHost)
 		modifiedContent = strings.ReplaceAll(modifiedContent, "ssl=!0", "ssl=0")
 		modifiedContent = strings.ReplaceAll(modifiedContent, "ssl:!0", "ssl:0")
@@ -187,13 +197,40 @@ func handleUI() http.HandlerFunc {
 			contentType = "font/woff2"
 		}
 
-		// Serve the modified content
-		w.Header().Set("Content-Type", contentType)
-		_, err = w.Write([]byte(modifiedContent))
-		if err != nil {
-			http.Error(w, "Error serving file", http.StatusInternalServerError)
-			return
-		}
+		file := servedFile{body: []byte(modifiedContent), contentType: contentType}
+		servedFiles.Store(cacheKey, file)
+		serveFile(w, path, file)
+	}
+}
+
+// servedFile is a frontend file after the host rewrite, ready to send.
+type servedFile struct {
+	body        []byte
+	contentType string
+}
+
+var servedFiles sync.Map
+
+func serveFile(w http.ResponseWriter, path string, file servedFile) {
+	w.Header().Set("Content-Type", file.contentType)
+	w.Header().Set("Cache-Control", cacheControl(path))
+	_, _ = w.Write(file.body)
+}
+
+// cacheControl lets browsers keep the frontend. Without it every page load —
+// and switching boards used to be one — fetched the 3 MB of scripts again.
+// Everything is private: the instance is behind a login.
+func cacheControl(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/assets/"):
+		// Build output carries a content hash in its name, so a changed file
+		// always arrives under a new name.
+		return "private, max-age=31536000, immutable"
+	case strings.HasSuffix(path, ".html"):
+		// The page names the current bundles, so it is always revalidated.
+		return "no-cache"
+	default:
+		return "private, max-age=86400"
 	}
 }
 
@@ -400,6 +437,7 @@ func main() {
 	auth.InitAuth()
 	openai.Init()
 	store := stores.GetStore()
+	boards.Preload(store)
 
 	r := setupRouter(store)
 

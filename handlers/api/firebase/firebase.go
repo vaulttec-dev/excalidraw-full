@@ -77,15 +77,53 @@ func StoreScene(ctx context.Context, store core.CanvasStore, room string, fields
 
 // DeleteScene removes a room's stored scene.
 func DeleteScene(ctx context.Context, store core.CanvasStore, room string) error {
-	return store.Delete(ctx, roomOwner, roomID(DocumentPath(room)))
+	documentPath := DocumentPath(room)
+	rooms.mu.Lock()
+	delete(rooms.fields, documentPath)
+	delete(rooms.edited, documentPath)
+	rooms.mu.Unlock()
+	return store.Delete(ctx, roomOwner, roomID(documentPath))
 }
 
-// memoryRooms is the fallback used when no store is wired up. It keeps the
-// previous in-memory behaviour so the shim still works in tests.
-var (
-	memoryRooms   = make(map[string]interface{})
-	memoryRoomsMu sync.RWMutex
-)
+// StorageID is the id a room's scene is stored under.
+func StorageID(room string) string {
+	return roomID(DocumentPath(room))
+}
+
+// EditedAt reports when a room was last saved, as far as this process knows.
+func EditedAt(room string) (time.Time, bool) {
+	rooms.mu.RLock()
+	defer rooms.mu.RUnlock()
+	at, ok := rooms.edited[DocumentPath(room)]
+	return at, ok
+}
+
+// SeedEditedAt records a room's last save as read from storage at startup. A
+// save made since then is newer and is kept.
+func SeedEditedAt(room string, at time.Time) {
+	rooms.mu.Lock()
+	defer rooms.mu.Unlock()
+	documentPath := DocumentPath(room)
+	if current, ok := rooms.edited[documentPath]; !ok || at.After(current) {
+		rooms.edited[documentPath] = at
+	}
+}
+
+// rooms caches every scene this process has read or written.
+//
+// The object store sits an ocean away from the server, so each round trip costs
+// a few hundred milliseconds, and the editor reads a room every time a board is
+// opened. The instance runs as a single process, so what it last wrote is the
+// current state and reads can be served from memory; writes still go to the
+// store before they are acknowledged. Without a store the cache is the storage.
+var rooms = struct {
+	mu     sync.RWMutex
+	fields map[string]interface{}
+	edited map[string]time.Time
+}{
+	fields: make(map[string]interface{}),
+	edited: make(map[string]time.Time),
+}
 
 // roomID derives a flat, filesystem-safe id from the Firestore document path
 // the frontend sends (".../documents/scenes/<room>"), which contains slashes
@@ -96,10 +134,10 @@ func roomID(documentPath string) string {
 }
 
 func loadRoom(r *http.Request, store core.CanvasStore, documentPath string) (interface{}, bool) {
-	if store == nil {
-		memoryRoomsMu.RLock()
-		defer memoryRoomsMu.RUnlock()
-		fields, ok := memoryRooms[documentPath]
+	rooms.mu.RLock()
+	fields, ok := rooms.fields[documentPath]
+	rooms.mu.RUnlock()
+	if ok || store == nil {
 		return fields, ok
 	}
 
@@ -108,11 +146,18 @@ func loadRoom(r *http.Request, store core.CanvasStore, documentPath string) (int
 		return nil, false
 	}
 
-	var fields interface{}
 	if err := json.Unmarshal(canvas.Data, &fields); err != nil {
 		logrus.WithError(err).WithField("room", documentPath).Warn("failed to decode stored room")
 		return nil, false
 	}
+
+	rooms.mu.Lock()
+	// A save may have landed while the store was being read; it is newer.
+	if _, saved := rooms.fields[documentPath]; !saved {
+		rooms.fields[documentPath] = fields
+	}
+	fields = rooms.fields[documentPath]
+	rooms.mu.Unlock()
 	return fields, true
 }
 
@@ -121,24 +166,32 @@ func saveRoom(r *http.Request, store core.CanvasStore, documentPath string, fiel
 }
 
 func saveRoomCtx(ctx context.Context, store core.CanvasStore, documentPath string, fields interface{}) error {
-	if store == nil {
-		memoryRoomsMu.Lock()
-		defer memoryRoomsMu.Unlock()
-		memoryRooms[documentPath] = fields
-		return nil
+	now := time.Now()
+
+	if store != nil {
+		data, err := json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+
+		// A creation time given up front spares the store reading the object
+		// back just to preserve it; nothing uses a room's creation time.
+		if err := store.Save(ctx, &core.Canvas{
+			ID:        roomID(documentPath),
+			UserID:    roomOwner,
+			Name:      documentPath,
+			Data:      data,
+			CreatedAt: now,
+		}); err != nil {
+			return err
+		}
 	}
 
-	data, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-
-	return store.Save(ctx, &core.Canvas{
-		ID:     roomID(documentPath),
-		UserID: roomOwner,
-		Name:   documentPath,
-		Data:   data,
-	})
+	rooms.mu.Lock()
+	rooms.fields[documentPath] = fields
+	rooms.edited[documentPath] = now
+	rooms.mu.Unlock()
+	return nil
 }
 
 func (body *BatchGetRequest) Bind(r *http.Request) (err error) {

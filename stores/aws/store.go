@@ -132,6 +132,31 @@ func (s *s3Store) List(ctx context.Context, userID string) ([]*core.Canvas, erro
 	return canvases, nil
 }
 
+// ListMeta lists a user's canvases from object metadata alone: one request per
+// thousand objects instead of one per object.
+func (s *s3Store) ListMeta(ctx context.Context, userID string) ([]core.CanvasMeta, error) {
+	paginator := s3.NewListObjectsV2Paginator(s.s3Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.bucket),
+		Prefix: aws.String(userID + "/"),
+	})
+
+	var metas []core.CanvasMeta
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list canvases for user %s: %v", userID, err)
+		}
+		for _, object := range page.Contents {
+			meta := core.CanvasMeta{ID: path.Base(aws.ToString(object.Key))}
+			if object.LastModified != nil {
+				meta.UpdatedAt = *object.LastModified
+			}
+			metas = append(metas, meta)
+		}
+	}
+	return metas, nil
+}
+
 func (s *s3Store) Get(ctx context.Context, userID, id string) (*core.Canvas, error) {
 	key, err := s.getCanvasKey(userID, id)
 	if err != nil {
