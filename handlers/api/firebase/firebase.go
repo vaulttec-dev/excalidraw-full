@@ -1,6 +1,7 @@
 package firebase
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -60,6 +61,25 @@ type (
 // under their own prefix.
 const roomOwner = "rooms"
 
+// RoomOwner is the namespace rooms are stored under, for callers that list them.
+const RoomOwner = roomOwner
+
+// DocumentPath is the Firestore document path the editor uses for a room. The
+// project id is the one baked into the frontend build.
+func DocumentPath(room string) string {
+	return "projects/excalidraw-room-persistence/databases/(default)/documents/scenes/" + room
+}
+
+// StoreScene writes a room's encrypted scene in the shape the editor reads back.
+func StoreScene(ctx context.Context, store core.CanvasStore, room string, fields interface{}) error {
+	return saveRoomCtx(ctx, store, DocumentPath(room), fields)
+}
+
+// DeleteScene removes a room's stored scene.
+func DeleteScene(ctx context.Context, store core.CanvasStore, room string) error {
+	return store.Delete(ctx, roomOwner, roomID(DocumentPath(room)))
+}
+
 // memoryRooms is the fallback used when no store is wired up. It keeps the
 // previous in-memory behaviour so the shim still works in tests.
 var (
@@ -97,6 +117,10 @@ func loadRoom(r *http.Request, store core.CanvasStore, documentPath string) (int
 }
 
 func saveRoom(r *http.Request, store core.CanvasStore, documentPath string, fields interface{}) error {
+	return saveRoomCtx(r.Context(), store, documentPath, fields)
+}
+
+func saveRoomCtx(ctx context.Context, store core.CanvasStore, documentPath string, fields interface{}) error {
 	if store == nil {
 		memoryRoomsMu.Lock()
 		defer memoryRoomsMu.Unlock()
@@ -109,7 +133,7 @@ func saveRoom(r *http.Request, store core.CanvasStore, documentPath string, fiel
 		return err
 	}
 
-	return store.Save(r.Context(), &core.Canvas{
+	return store.Save(ctx, &core.Canvas{
 		ID:     roomID(documentPath),
 		UserID: roomOwner,
 		Name:   documentPath,

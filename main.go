@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	_ "embed"
+	"excalidraw-complete/handlers/api/boards"
 	"excalidraw-complete/handlers/api/documents"
 	"excalidraw-complete/handlers/api/firebase"
 	"excalidraw-complete/handlers/api/kv"
@@ -51,27 +52,19 @@ var assets embed.FS
 // the backend only while a room is open.
 //
 // It runs before the editor's own bundle, so by the time that reads the hash the
-// room is already there and no reload is needed. The key is generated here, in
-// the browser, and only ever travels in the fragment — the server never receives
-// it and so cannot read the scenes it stores. The room is remembered so that
-// reopening the instance returns to the same board; "/?new" starts another one.
+// room is already there and no reload is needed. The key is generated in the
+// browser. Every room opened here is registered in the shared board list (see
+// handlers/api/boards), which is what lets the team find boards without passing
+// links around, and a "Дошки" button leading to that list is laid over the
+// editor. The last room is remembered so that reopening the instance returns to
+// the same board; "/?new" starts another one.
 const autoRoomScript = `<script>
 (function () {
-  // A hash already present means a room or a shared drawing: leave it alone.
-  if (location.hash.length > 1) return;
-
   var STORAGE_KEY = "excalidraw-self-host-room";
-  var wantsNew = /[?&]new(=|&|$)/.test(location.search);
+  var ROOM = /^#room=([0-9a-f]{20}),([A-Za-z0-9_-]{22})$/;
 
-  if (!wantsNew) {
-    try {
-      var saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        location.hash = saved;
-        return;
-      }
-    } catch (e) {}
-  }
+  // Any other hash is a shared drawing (#json=...): leave it alone.
+  if (location.hash.length > 1 && !ROOM.test(location.hash)) return;
 
   var toHex = function (bytes) {
     return Array.prototype.map
@@ -85,12 +78,49 @@ const autoRoomScript = `<script>
     return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
   };
 
-  var id = toHex(crypto.getRandomValues(new Uint8Array(10)));
-  var key = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
-  var room = "#room=" + id + "," + key;
+  if (!ROOM.test(location.hash)) {
+    var saved = null;
+    if (!/[?&]new(=|&|$)/.test(location.search)) {
+      try { saved = localStorage.getItem(STORAGE_KEY); } catch (e) {}
+    }
+    location.hash = saved && ROOM.test(saved)
+      ? saved
+      : "#room=" + toHex(crypto.getRandomValues(new Uint8Array(10))) + "," +
+        toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
+  }
 
-  try { localStorage.setItem(STORAGE_KEY, room); } catch (e) {}
-  location.hash = room;
+  var room = ROOM.exec(location.hash);
+  try { localStorage.setItem(STORAGE_KEY, location.hash); } catch (e) {}
+
+  // Registering is idempotent: a board already listed keeps its name and author.
+  fetch("/api/boards/" + room[1], {
+    method: "PUT",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key: room[2] }),
+  }).catch(function () {});
+
+  var addButton = function () {
+    var style = document.createElement("style");
+    style.textContent =
+      ".sh-boards{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:5;" +
+      "padding:8px 16px;border-radius:10px;background:#6965db;color:#fff;text-decoration:none;" +
+      "font:600 14px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;" +
+      "box-shadow:0 2px 8px rgba(0,0,0,.18)}" +
+      ".sh-boards:hover{filter:brightness(1.08)}" +
+      "@media (max-width:730px){.sh-boards{bottom:auto;top:64px}}";
+    var link = document.createElement("a");
+    link.className = "sh-boards";
+    link.href = "/boards";
+    link.textContent = "Дошки";
+    document.head.appendChild(style);
+    document.body.appendChild(link);
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", addButton);
+  } else {
+    addButton();
+  }
 })();
 </script>`
 
@@ -209,6 +239,15 @@ func setupRouter(store stores.Store) *chi.Mux {
 	r.Route("/v1/projects/{project_id}/databases/{database_id}", func(r chi.Router) {
 		r.Post("/documents:commit", firebase.HandleBatchCommit(store))
 		r.Post("/documents:batchGet", firebase.HandleBatchGet(store))
+	})
+
+	// The shared board list: the upstream editor has none of its own.
+	r.Get("/boards", boards.HandlePage)
+	r.Route("/api/boards", func(r chi.Router) {
+		r.Get("/", boards.HandleList(store))
+		r.Post("/import", boards.HandleImport(store))
+		r.Put("/{id}", boards.HandlePut(store))
+		r.Delete("/{id}", boards.HandleDelete(store))
 	})
 
 	r.Route("/api/v2", func(r chi.Router) {
