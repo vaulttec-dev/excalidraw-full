@@ -1,0 +1,35 @@
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_0255b76d38d037 615-656
+main.go
+  s_c2ca996cae1f5e::t_bc38348a28031e 305
+handlers/api/history/history.go
+  s_c2ca996cae1f5e::t_fb8fbcc4e7b8c2 125-139
+handlers/api/history/history_test.go
+  s_c2ca996cae1f5e::t_b7d31ba16a8d58 1-44
+excalidraw
+  s_83b76625da7875::t_5bb0bd03097f41 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "82c47686dc677560f945570f71ae422ffdb68675",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    },
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
