@@ -1,0 +1,42 @@
+handlers/api/boards/boards.go
+  s_c2ca996cae1f5e::t_31b7fe9ea0014a 31,48-50,65-79,89-106,108,111-116,119-122,125-127,129-135,137-139,141,143-145,147-218,220-226,228,230-231,233-235,241-242,245-264,271,287-290,300-306,309,313,317-324,328-330,333-337,349-352,360-363,393-396,403-408,411,443-451,455-457
+main.go
+  s_c2ca996cae1f5e::t_e4501249086c2b 153-166
+  s_c2ca996cae1f5e::t_f2d8717cd8a9ae 23
+  s_c2ca996cae1f5e::t_d082308069e70f 440
+  s_c2ca996cae1f5e::t_0be662f2265f80 200-233
+core/canvas.go
+  s_c2ca996cae1f5e::t_06e4ecb03b623f 20-32
+stores/aws/store.go
+  s_c2ca996cae1f5e::t_550beb8c196e6e 135-159
+handlers/api/firebase/firebase.go
+  s_c2ca996cae1f5e::t_0a5f7c8adebeb3 80-85,88-126
+  s_c2ca996cae1f5e::t_69ccdd88780de0 137-140,153-160
+  s_c2ca996cae1f5e::t_efe9be28144245 169-187,190-194
+excalidraw
+  s_83b76625da7875::t_b77a0754d38d57 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0b178d6cb2588b74d5f5a44f22b35d3ec01c674c",
+  "prompts": {},
+  "sessions": {
+    "s_83b76625da7875": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1f1d7432-08c5-4bf0-825c-39c9e42c869a",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    },
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
