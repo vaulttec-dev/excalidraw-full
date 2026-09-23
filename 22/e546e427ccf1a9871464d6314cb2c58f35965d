@@ -1,0 +1,24 @@
+handlers/auth/allowlist.go
+  s_c2ca996cae1f5e::t_fc343df0f82853 13-16,20,28-30,33-35,48-51,62
+main.go
+  s_c2ca996cae1f5e::t_2bfad2d262c0e9 301
+handlers/auth/auth.go
+  s_c2ca996cae1f5e::t_1482fedfe2573e 367,479
+  s_c2ca996cae1f5e::t_1ace52f895bf83 249-262
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "22e546e427ccf1a9871464d6314cb2c58f35965d",
+  "prompts": {},
+  "sessions": {
+    "s_c2ca996cae1f5e": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "75a10056-1bc8-4440-8bfa-c39cd73655c7",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "VaultTec-Dev <vaulttec-dev@proton.me>"
+    }
+  }
+}
