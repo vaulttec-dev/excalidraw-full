@@ -68,17 +68,15 @@ func randomInt() int { return rand.Intn(math.MaxInt32) }
 // indexAfter returns the i-th fractional index placed after `after`, the
 // greatest index already on the board. The editor orders elements by these
 // keys; appending a fraction that ends in a letter keeps each key valid and
-// greater than everything before it.
+// greater than everything before it. The suffix has a fixed width so that the
+// keys sort in the order of i; 26³ elements per call is far beyond any board.
 func indexAfter(after string, i int) string {
 	if after == "" {
 		after = "a0"
 	}
 	const letters = "abcdefghijklmnopqrstuvwxyz"
-	suffix := string([]byte{letters[(i/26)%26], letters[i%26]})
-	if i >= 26*26 {
-		suffix = string(letters[(i/(26*26))%26]) + suffix
-	}
-	return after + "V" + suffix
+	suffix := []byte{letters[(i/(26*26))%26], letters[(i/26)%26], letters[i%26]}
+	return after + "V" + string(suffix)
 }
 
 func maxIndex(elements []Element) string {

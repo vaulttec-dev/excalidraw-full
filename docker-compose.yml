@@ -1,11 +1,11 @@
-version: '3.8'
-
+# Local run. Production runs in Coolify with the same image and its variables.
 services:
   excalidraw:
-    image: ghcr.io/betterandbetterii/excalidraw-full:latest
+    image: ghcr.io/vaulttec-dev/excalidraw-full:latest
     ports:
       - "3002:3002"
+    env_file: .env
+    environment:
+      DATA_SOURCE_NAME: /data/excalidraw.db
     volumes:
-      - ./data:/root/data
-      - ./excalidraw.db:/root/excalidraw.db:Z
-      - ./.env:/root/.env
+      - ./data:/data

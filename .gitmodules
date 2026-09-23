@@ -1,6 +1,3 @@
-[submodule "cloudflare-worker"]
-	path = cloudflare-worker
-	url = https://github.com/betterandbetterii/cf-kv.git
 [submodule "excalidraw"]
 	path = excalidraw
 	url = https://github.com/vaulttec-dev/excalidraw.git

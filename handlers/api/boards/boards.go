@@ -12,11 +12,6 @@ package boards
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"excalidraw-complete/core"
 	"excalidraw-complete/handlers/api/firebase"
@@ -28,7 +23,6 @@ import (
 	"net/http"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,9 +53,6 @@ var (
 type entry struct {
 	Key       string `json:"key"`
 	CreatedBy string `json:"createdBy"`
-	// Source marks a board carried over from the previous editor, so importing
-	// twice does not produce duplicates.
-	Source string `json:"source,omitempty"`
 }
 
 // record is a registry entry as held in memory.
@@ -680,153 +671,4 @@ func HandleRestoreVersion(store core.CanvasStore) http.HandlerFunc {
 		scene.Announce(id, board.Key, changed)
 		w.WriteHeader(http.StatusNoContent)
 	}
-}
-
-// legacyCanvas is the part of a canvas saved by the previous, multi-canvas
-// editor that a room needs.
-type legacyCanvas struct {
-	Elements json.RawMessage `json:"elements"`
-	Files    map[string]any  `json:"files"`
-}
-
-type importResult struct {
-	Imported    int      `json:"imported"`
-	Skipped     int      `json:"skipped"`
-	WithImages  []string `json:"withImages,omitempty"`
-	FailedNames []string `json:"failed,omitempty"`
-}
-
-// HandleImport carries the canvases the previous editor saved for an account
-// (owner "github:<id>") over into rooms and lists them. The editor that wrote
-// them is gone and nothing reads that prefix any more, so without this they
-// would sit in storage unreachable.
-func HandleImport(store core.CanvasStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		source := r.URL.Query().Get("owner")
-		if !strings.HasPrefix(source, "github:") && !strings.HasPrefix(source, "oidc:") {
-			http.Error(w, "owner must be a previous account prefix, e.g. github:<id>", http.StatusBadRequest)
-			return
-		}
-		if err := ensureLoaded(r.Context(), store); err != nil {
-			unavailable(w, err)
-			return
-		}
-
-		legacy, err := store.List(r.Context(), source)
-		if err != nil {
-			http.Error(w, "failed to list previous canvases", http.StatusInternalServerError)
-			return
-		}
-
-		imported := make(map[string]bool)
-		registry.mu.RLock()
-		for _, rec := range registry.records {
-			if rec.Source != "" {
-				imported[rec.Source] = true
-			}
-		}
-		registry.mu.RUnlock()
-
-		var result importResult
-		for _, item := range legacy {
-			marker := source + "/" + item.ID
-			if imported[marker] {
-				result.Skipped++
-				continue
-			}
-
-			full, err := store.Get(r.Context(), source, item.ID)
-			if err != nil {
-				result.FailedNames = append(result.FailedNames, item.Name)
-				continue
-			}
-			var canvas legacyCanvas
-			if err := json.Unmarshal(full.Data, &canvas); err != nil || len(canvas.Elements) == 0 {
-				result.FailedNames = append(result.FailedNames, item.Name)
-				continue
-			}
-
-			room, key, err := newRoom(r.Context(), store, canvas.Elements)
-			if err != nil {
-				logrus.WithError(err).WithField("canvas", item.ID).Error("failed to import canvas")
-				result.FailedNames = append(result.FailedNames, item.Name)
-				continue
-			}
-
-			name := strings.TrimSpace(full.Name)
-			if name == "" || name == item.ID {
-				name = "Стара дошка " + full.CreatedAt.Format("2006-01-02")
-			}
-			rec := &record{
-				entry:     entry{Key: key, CreatedBy: author(r), Source: marker},
-				name:      name,
-				createdAt: full.CreatedAt,
-			}
-			if rec.createdAt.IsZero() {
-				rec.createdAt = time.Now()
-			}
-			if err := store.Save(r.Context(), rec.canvas(room)); err != nil {
-				result.FailedNames = append(result.FailedNames, item.Name)
-				continue
-			}
-			registry.mu.Lock()
-			registry.records[room] = rec
-			registry.mu.Unlock()
-
-			result.Imported++
-			// Images of a room live in a storage this instance does not provide,
-			// so they cannot come along; the caller is told which boards had any.
-			if len(canvas.Files) > 0 {
-				result.WithImages = append(result.WithImages, name)
-			}
-		}
-
-		render.JSON(w, r, result)
-	}
-}
-
-// newRoom stores elements as a new room, encrypted exactly the way the editor
-// does it: AES-GCM with a 128 bit key and a 12 byte IV over the elements' JSON.
-func newRoom(ctx context.Context, store core.CanvasStore, elements json.RawMessage) (string, string, error) {
-	idBytes := make([]byte, 10)
-	rawKey := make([]byte, 16)
-	iv := make([]byte, 12)
-	for _, b := range [][]byte{idBytes, rawKey, iv} {
-		if _, err := rand.Read(b); err != nil {
-			return "", "", err
-		}
-	}
-
-	block, err := aes.NewCipher(rawKey)
-	if err != nil {
-		return "", "", err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", "", err
-	}
-	ciphertext := gcm.Seal(nil, iv, elements, nil)
-
-	// The editor compares scene versions to decide which copy is newer.
-	var versions []struct {
-		Version int `json:"version"`
-	}
-	if err := json.Unmarshal(elements, &versions); err != nil {
-		return "", "", fmt.Errorf("elements are not a list: %w", err)
-	}
-	sceneVersion := 0
-	for _, v := range versions {
-		sceneVersion += v.Version
-	}
-
-	room := hex.EncodeToString(idBytes)
-	fields := map[string]any{
-		"sceneVersion": map[string]string{"integerValue": strconv.Itoa(sceneVersion)},
-		"iv":           map[string]string{"bytesValue": base64.StdEncoding.EncodeToString(iv)},
-		"ciphertext":   map[string]string{"bytesValue": base64.StdEncoding.EncodeToString(ciphertext)},
-	}
-	if err := firebase.StoreScene(ctx, store, room, fields); err != nil {
-		return "", "", err
-	}
-	return room, base64.RawURLEncoding.EncodeToString(rawKey), nil
 }

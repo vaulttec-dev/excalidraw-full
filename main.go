@@ -6,17 +6,14 @@ import (
 	"excalidraw-complete/handlers/api/boards"
 	"excalidraw-complete/handlers/api/documents"
 	"excalidraw-complete/handlers/api/firebase"
-	"excalidraw-complete/handlers/api/kv"
 	"excalidraw-complete/handlers/api/me"
 	"excalidraw-complete/handlers/api/scene"
-	"excalidraw-complete/handlers/api/openai"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/handlers/mcpserver"
 	"excalidraw-complete/handlers/oauth"
 	authMiddleware "excalidraw-complete/middleware"
 	"excalidraw-complete/stores"
 	"flag"
-	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
@@ -34,18 +31,6 @@ import (
 	"github.com/zishang520/engine.io/v2/types"
 	"github.com/zishang520/engine.io/v2/utils"
 	socketio "github.com/zishang520/socket.io/v2/socket"
-)
-
-type (
-	UserToFollow struct {
-		SocketId string `json:"socketId"`
-		Username string `json:"username"`
-	}
-
-	OnUserFollowedPayload struct {
-		UserToFollow UserToFollow `json:"userToFollow"`
-		Action       string       `json:"action"` // "FOLLOW" | "UNFOLLOW"
-	}
 )
 
 //go:embed all:frontend
@@ -129,16 +114,12 @@ func handleUI() http.HandlerFunc {
 
 		// The editor ships a service worker that answers every navigation from
 		// its cache, which would swallow the redirect to the login and leave the
-		// app running against endpoints that all answer 401. Serving 404 here
-		// both stops new registrations and makes browsers drop the ones they
-		// already have; the cost is the offline mode, which an instance behind a
-		// login cannot offer anyway.
+		// app running against endpoints that all answer 401; a browser still
+		// running the previous frontend's worker bounced between two sign-ins.
+		// This worker replaces either, removes itself and its caches, and
+		// reloads the open tabs onto the current frontend. The cost is the
+		// offline mode, which an instance behind a login cannot offer anyway.
 		if path == "/sw.js" || path == "/service-worker.js" {
-			// A 404 is not reliably taken as "unregister", and a browser that
-			// still ran the previous frontend's worker kept serving that
-			// frontend from cache — which bounced between its own sign-in and
-			// ours forever. This worker replaces it, removes itself and its
-			// caches, and reloads the open tabs onto the current frontend.
 			w.Header().Set("Content-Type", "application/javascript")
 			w.Header().Set("Cache-Control", "no-store")
 			_, _ = w.Write([]byte(serviceWorkerKillSwitch))
@@ -168,7 +149,8 @@ func handleUI() http.HandlerFunc {
 		}
 		defer f.Close()
 
-		// 替换为请求的url对应的domain，使其在反向代理或不同域名下也能正常工作。
+		// The editor talks to Firestore; pointing it at this host makes it use
+		// the Firestore shim in handlers/api/firebase instead.
 		backendHost := os.Getenv("EXCALIDRAW_BACKEND_HOST")
 		if backendHost == "" {
 			backendHost = r.Host
@@ -207,8 +189,12 @@ func handleUI() http.HandlerFunc {
 			contentType = "text/css"
 		case strings.HasSuffix(path, ".wasm"):
 			contentType = "application/wasm"
-		case strings.HasSuffix(path, ".tsx"):
-			contentType = "text/typescript"
+		case strings.HasSuffix(path, ".webmanifest"):
+			contentType = "application/manifest+json"
+		case strings.HasSuffix(path, ".json"):
+			contentType = "application/json"
+		case strings.HasSuffix(path, ".svg"):
+			contentType = "image/svg+xml"
 		case strings.HasSuffix(path, ".png"):
 			contentType = "image/png"
 		case strings.HasSuffix(path, ".woff2"):
@@ -310,7 +296,6 @@ func setupRouter(store stores.Store) *chi.Mux {
 	r.Get("/boards", boards.HandlePage)
 	r.Route("/api/boards", func(r chi.Router) {
 		r.Get("/", boards.HandleList(store))
-		r.Post("/import", boards.HandleImport(store))
 		r.Put("/{id}", boards.HandlePut(store))
 		r.Delete("/{id}", boards.HandleDelete(store))
 		r.Get("/{id}/versions", boards.HandleVersions(store))
@@ -319,24 +304,8 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Post("/trash/{id}/restore", boards.HandleRestoreFromTrash(store))
 	})
 
+	// The editor's "Share → link" (#json=): an encrypted snapshot, not a room.
 	r.Route("/api/v2", func(r chi.Router) {
-		// Route for canvases, protected by JWT auth
-		r.Group(func(r chi.Router) {
-			r.Use(authMiddleware.AuthJWT)
-			r.Route("/kv", func(r chi.Router) {
-				r.Get("/", kv.HandleListCanvases(store))
-				r.Route("/{key}", func(r chi.Router) {
-					r.Get("/", kv.HandleGetCanvas(store))
-					r.Put("/", kv.HandleSaveCanvas(store))
-					r.Delete("/", kv.HandleDeleteCanvas(store))
-				})
-			})
-			r.Route("/chat", func(r chi.Router) {
-				r.Post("/completions", openai.HandleChatCompletion())
-			})
-		})
-
-		// Old routes for anonymous document sharing
 		r.Post("/post/", documents.HandleCreate(store))
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", documents.HandleGet(store))
@@ -407,33 +376,50 @@ func setupSocketIO() *socketio.Server {
 			socket.Volatile().Broadcast().To(socketio.Room(roomID)).Emit("client-broadcast", datas[1], datas[2])
 		})
 
+		// Follow mode, as in excalidraw-room: followers of a socket share a room
+		// named after it, and the followed client is told who is in it — that
+		// is what makes it start sending its viewport.
 		socket.On("user-follow", func(datas ...any) {
-			// TODO()
-
+			payload, _ := datas[0].(map[string]any)
+			target, _ := payload["userToFollow"].(map[string]any)
+			targetID, _ := target["socketId"].(string)
+			if targetID == "" {
+				return
+			}
+			followRoom := socketio.Room("follow@" + targetID)
+			switch payload["action"] {
+			case "FOLLOW":
+				socket.Join(followRoom)
+			case "UNFOLLOW":
+				socket.Leave(followRoom)
+			default:
+				return
+			}
+			announceFollowers(ioo, followRoom, socketio.SocketId(targetID))
 		})
 		socket.On("disconnecting", func(datas ...any) {
 			for _, currentRoom := range socket.Rooms().Keys() {
 				ioo.In(currentRoom).FetchSockets()(func(usersInRoom []*socketio.RemoteSocket, _ error) {
 					otherClients := []socketio.SocketId{}
-					utils.Log().Printf("disconnecting %v from room %v\n", me, currentRoom)
 					for _, userInRoom := range usersInRoom {
 						if userInRoom.Id() != me {
 							otherClients = append(otherClients, userInRoom.Id())
 						}
 					}
-					if len(otherClients) > 0 {
-						utils.Log().Printf("leaving user, room %v has users  %v\n", currentRoom, otherClients)
-						ioo.In(currentRoom).Emit(
-							"room-user-change",
-							otherClients,
-						)
 
+					// A follower leaving: the followed client may stop sending
+					// its viewport once nobody follows it.
+					if followed, ok := strings.CutPrefix(string(currentRoom), "follow@"); ok {
+						ioo.To(socketio.Room(followed)).Emit("user-follow-room-change", otherClients)
+						return
 					}
 
+					if len(otherClients) > 0 {
+						utils.Log().Printf("leaving user, room %v has users  %v\n", currentRoom, otherClients)
+						ioo.In(currentRoom).Emit("room-user-change", otherClients)
+					}
 				})
-
 			}
-
 		})
 		socket.On("disconnect", func(datas ...any) {
 			socket.RemoveAllListeners("")
@@ -441,12 +427,22 @@ func setupSocketIO() *socketio.Server {
 		})
 	})
 	return ioo
+}
 
+// announceFollowers tells a followed client who follows it now.
+func announceFollowers(ioo *socketio.Server, followRoom socketio.Room, followed socketio.SocketId) {
+	ioo.In(followRoom).FetchSockets()(func(followers []*socketio.RemoteSocket, _ error) {
+		ids := []socketio.SocketId{}
+		for _, follower := range followers {
+			ids = append(ids, follower.Id())
+		}
+		ioo.To(socketio.Room(followed)).Emit("user-follow-room-change", ids)
+	})
 }
 
 func waitForShutdown(ioo *socketio.Server) {
 	exit := make(chan struct{})
-	SignalC := make(chan os.Signal)
+	SignalC := make(chan os.Signal, 1)
 
 	signal.Notify(SignalC, os.Interrupt, syscall.SIGHUP, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
@@ -460,10 +456,8 @@ func waitForShutdown(ioo *socketio.Server) {
 	}()
 
 	<-exit
+	logrus.Info("shutting down")
 	ioo.Close(nil)
-	os.Exit(0)
-	fmt.Println("Shutting down...")
-	// TODO(patwie): Close other resources
 	os.Exit(0)
 }
 
@@ -487,7 +481,6 @@ func main() {
 	})
 
 	auth.InitAuth()
-	openai.Init()
 	store := stores.GetStore()
 	boards.Preload(store)
 

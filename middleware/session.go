@@ -22,9 +22,21 @@ func BaseURL(r *http.Request) string {
 // HealthPath is the health check endpoint; it tells nothing about the boards.
 const HealthPath = "/healthz"
 
-// apiTokenEnv lets non-browser clients — the MCP server writing scenes — through
-// the gate without a login round trip.
-const apiTokenEnv = "API_TOKEN"
+type contextKey string
+
+// ClaimsContextKey holds the signed-in account (*auth.AppClaims) on a request
+// that passed the gate.
+const ClaimsContextKey = contextKey("claims")
+
+// publicPaths are files a browser fetches without cookies or before signing in:
+// the service worker script (fetched to update the worker, and it is what
+// removes a stale one) and the web manifest (requested without credentials).
+var publicPaths = map[string]bool{
+	HealthPath:              true,
+	"/sw.js":                true,
+	"/service-worker.js":    true,
+	"/manifest.webmanifest": true,
+}
 
 // RequireSession keeps the whole instance behind a GitHub login whenever OAuth
 // is configured. Without GITHUB_CLIENT_ID (a bare local run) it stays out of the
@@ -37,13 +49,10 @@ func RequireSession(next http.Handler) http.Handler {
 		}
 
 		// The login round trip itself must stay reachable, and so must the health
-		// check, which the container runtime calls without a session, and the
-		// service worker script: browsers fetch it without a session to update
-		// the worker, and it is what removes a stale one.
+		// check, which the container runtime calls without a session.
 		// The OAuth endpoints MCP clients sign in through are public by nature;
 		// the one that needs a person checks the session itself.
-		if strings.HasPrefix(r.URL.Path, "/auth/") || r.URL.Path == HealthPath ||
-			r.URL.Path == "/sw.js" || r.URL.Path == "/service-worker.js" ||
+		if publicPaths[r.URL.Path] || strings.HasPrefix(r.URL.Path, "/auth/") ||
 			strings.HasPrefix(r.URL.Path, "/.well-known/") || strings.HasPrefix(r.URL.Path, "/oauth/") {
 			next.ServeHTTP(w, r)
 			return
@@ -71,21 +80,11 @@ func RequireSession(next http.Handler) http.Handler {
 }
 
 func authorize(r *http.Request) (*auth.AppClaims, bool) {
-	if bearer := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer")); bearer != "" {
-		if token := strings.TrimSpace(os.Getenv(apiTokenEnv)); token != "" && bearer == token {
-			return nil, true
-		}
-		// Access tokens this instance issued through OAuth, to MCP clients.
-		if claims, err := auth.ParseJWT(bearer); err == nil {
-			return claims, true
-		}
-		// Clients without a browser — the MCP server — sign in with the
-		// person's own GitHub token, held to the same allowlist as a browser
-		// login, so no secret has to be shared across the team.
-		if claims, ok := auth.VerifyGitHubToken(r.Context(), bearer); ok {
-			return claims, true
-		}
-		return nil, false
+	// MCP clients carry an access token this instance issued through OAuth, or
+	// the person's own GitHub token, held to the same allowlist as a browser.
+	if header := r.Header.Get("Authorization"); header != "" {
+		claims := auth.ClaimsFromBearer(r.Context(), header)
+		return claims, claims != nil
 	}
 
 	cookie, err := r.Cookie(auth.SessionCookieName)

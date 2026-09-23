@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,11 +30,29 @@ type githubTokenVerdict struct {
 
 var githubTokens sync.Map // sha256(token) → githubTokenVerdict
 
+// githubTokenPrefixes are the prefixes GitHub puts on the tokens it issues:
+// OAuth, personal (classic and fine-grained), app user and app installation.
+var githubTokenPrefixes = []string{"gho_", "ghp_", "github_pat_", "ghu_", "ghs_"}
+
+// looksLikeGitHubToken spares a GitHub round trip for anything that cannot be
+// a GitHub token, such as an expired token of this instance.
+func looksLikeGitHubToken(token string) bool {
+	for _, prefix := range githubTokenPrefixes {
+		if strings.HasPrefix(token, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // VerifyGitHubToken signs in a client that has no browser — the MCP server —
 // with a person's own GitHub token. The token is checked with GitHub and held
 // to the same rules as a browser login: a login on ALLOWED_GITHUB_LOGINS or
 // membership in one of ALLOWED_GITHUB_ORGS.
 func VerifyGitHubToken(ctx context.Context, token string) (*AppClaims, bool) {
+	if !looksLikeGitHubToken(token) {
+		return nil, false
+	}
 	sum := sha256.Sum256([]byte(token))
 	key := hex.EncodeToString(sum[:])
 	if cached, ok := githubTokens.Load(key); ok {
