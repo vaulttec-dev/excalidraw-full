@@ -80,6 +80,8 @@ type Board struct {
 	Folder    string    `json:"folder,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	EditedAt  time.Time `json:"editedAt"`
+	// CanDelete tells the list's reader whether they may delete the board.
+	CanDelete bool `json:"canDelete"`
 }
 
 // registry holds the whole list in memory. Reading it from the object store
@@ -413,6 +415,9 @@ func HandleList(store core.CanvasStore) http.HandlerFunc {
 			unavailable(w, err)
 			return
 		}
+		for i := range boards {
+			boards[i].CanDelete = mayDelete(r, boards[i].CreatedBy)
+		}
 		render.JSON(w, r, boards)
 	}
 }
@@ -519,6 +524,10 @@ func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "no such board", http.StatusNotFound)
 			return
 		}
+		if !mayDelete(r, rec.CreatedBy) {
+			forbidDelete(w)
+			return
+		}
 
 		if fields, ok := firebase.LoadScene(ctx, store, id); ok {
 			if err := history.Snapshot(ctx, store, id, fields); err != nil {
@@ -562,6 +571,8 @@ type TrashedBoard struct {
 	CreatedBy string    `json:"createdBy"`
 	DeletedBy string    `json:"deletedBy"`
 	DeletedAt time.Time `json:"deletedAt"`
+	// CanPurge tells the reader whether they may delete it for good.
+	CanPurge bool `json:"canPurge"`
 }
 
 // HandleTrash lists deleted boards, most recently deleted first.
@@ -574,7 +585,8 @@ func HandleTrash(store core.CanvasStore) http.HandlerFunc {
 		registry.mu.RLock()
 		items := make([]TrashedBoard, 0, len(registry.trash))
 		for id, t := range registry.trash {
-			items = append(items, TrashedBoard{ID: id, Name: t.name, CreatedBy: t.CreatedBy, DeletedBy: t.DeletedBy, DeletedAt: t.deletedAt})
+			items = append(items, TrashedBoard{ID: id, Name: t.name, CreatedBy: t.CreatedBy, DeletedBy: t.DeletedBy, DeletedAt: t.deletedAt,
+				CanPurge: mayDelete(r, t.CreatedBy)})
 		}
 		registry.mu.RUnlock()
 		sort.Slice(items, func(i, j int) bool { return items[i].DeletedAt.After(items[j].DeletedAt) })
@@ -624,7 +636,9 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 		registry.records[id] = rec
 		delete(registry.trash, id)
 		registry.mu.Unlock()
-		render.JSON(w, r, toBoard(id, rec))
+		board := toBoard(id, rec)
+		board.CanDelete = mayDelete(r, rec.CreatedBy)
+		render.JSON(w, r, board)
 	}
 }
 
@@ -644,6 +658,10 @@ func HandlePurge(store core.CanvasStore) http.HandlerFunc {
 		registry.mu.RUnlock()
 		if item == nil {
 			http.Error(w, "no such board in the trash", http.StatusNotFound)
+			return
+		}
+		if !mayDelete(r, item.CreatedBy) {
+			forbidDelete(w)
 			return
 		}
 

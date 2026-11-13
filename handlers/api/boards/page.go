@@ -206,7 +206,8 @@ const page = `<!doctype html>
 
       actions.appendChild(copy);
       actions.appendChild(rename);
-      actions.appendChild(remove);
+      // Only the board's author or an organisation admin may delete it.
+      if (board.canDelete) actions.appendChild(remove);
       li.appendChild(info);
       li.appendChild(actions);
       ul.appendChild(li);
