@@ -71,21 +71,30 @@ func AllowedOrgs() []string {
 // IsAccessAllowed reports whether an account may use this instance, either by
 // its login or through one of the organisations it was found to belong to when
 // it signed in. Organisations are checked against the current configuration,
-// so dropping one from ALLOWED_GITHUB_ORGS takes effect at once; someone who
-// leaves an allowed organisation keeps access until their session expires,
-// since membership is only asked of GitHub at sign-in.
-func IsAccessAllowed(login string, orgs []string) bool {
+// so dropping one from ALLOWED_GITHUB_ORGS takes effect at once. Someone who
+// leaves an allowed organisation is refused once the membership sync
+// (org_members.go) confirms it, or, without GITHUB_ORG_MEMBERS_TOKEN, when
+// their session expires. subject is the account's "github:<id>".
+func IsAccessAllowed(subject, login string, orgs []string) bool {
 	if IsLoginAllowed(login) {
 		return true
 	}
 	for _, allowed := range AllowedOrgs() {
 		for _, org := range orgs {
 			if strings.EqualFold(org, allowed) {
-				return true
+				return members.admit(subject)
 			}
 		}
 	}
 	return false
+}
+
+// ConfirmMembership lifts a revocation once GitHub has just shown, with the
+// account's own token, that it belongs to an allowed organisation again.
+func ConfirmMembership(subject string, orgs []string) {
+	if len(orgs) > 0 {
+		members.confirm(subject)
+	}
 }
 
 // IsLoginAllowed reports whether the given account may use this instance.

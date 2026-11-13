@@ -39,7 +39,7 @@ func TestAccessAllowlist(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			resetAllowlist(t, c.logins, c.orgs)
-			if got := IsAccessAllowed(c.login, c.memberOf); got != c.want {
+			if got := IsAccessAllowed("github:1", c.login, c.memberOf); got != c.want {
 				t.Fatalf("IsAccessAllowed(%q, %v) = %v, want %v", c.login, c.memberOf, got, c.want)
 			}
 		})

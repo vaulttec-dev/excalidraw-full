@@ -497,7 +497,7 @@ func HandleToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Refreshing is where a removed person loses access for good.
-		if !auth.IsAccessAllowed(g.Login, g.Orgs) {
+		if !auth.IsAccessAllowed(g.Subject, g.Login, g.Orgs) {
 			oauthError(w, http.StatusBadRequest, "invalid_grant", "access has been revoked")
 			return
 		}

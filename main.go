@@ -346,6 +346,9 @@ func setupSocketIO() *socketio.Server {
 		socket := clients[0].(*socketio.Socket)
 		me := socket.Id()
 		myRoom := socketio.Room(me)
+		if subject := auth.SubjectFromHeaders(socket.Handshake().Headers); subject != "" {
+			socket.Join(accountRoom(subject))
+		}
 		ioo.To(myRoom).Emit("init-room")
 		utils.Log().Printf("init room %v\n", myRoom)
 		socket.On("join-room", func(datas ...any) {
@@ -405,6 +408,10 @@ func setupSocketIO() *socketio.Server {
 		})
 		socket.On("disconnecting", func(datas ...any) {
 			for _, currentRoom := range socket.Rooms().Keys() {
+				// The account's other tabs are not collaborators in a scene.
+				if strings.HasPrefix(string(currentRoom), "account@") {
+					continue
+				}
 				ioo.In(currentRoom).FetchSockets()(func(usersInRoom []*socketio.RemoteSocket, _ error) {
 					otherClients := []socketio.SocketId{}
 					for _, userInRoom := range usersInRoom {
@@ -433,6 +440,13 @@ func setupSocketIO() *socketio.Server {
 		})
 	})
 	return ioo
+}
+
+// accountRoom gathers the sockets of one account, so that they can all be
+// closed when the account is revoked. The prefix keeps it apart from the
+// editor's rooms, whose names are random ids.
+func accountRoom(subject string) socketio.Room {
+	return socketio.Room("account@" + subject)
 }
 
 // announceFollowers tells a followed client who follows it now.
@@ -494,6 +508,11 @@ func main() {
 
 	ioo := setupSocketIO()
 	r.Mount("/socket.io/", ioo.ServeHandler(nil))
+
+	// An account that has left the organisation loses its open boards too.
+	auth.StartMembershipSync(func(subject string) {
+		ioo.In(accountRoom(subject)).DisconnectSockets(true)
+	})
 
 	// MCP for Claude. Its changes reach people with a board open through the
 	// collaboration server, relayed like a browser's own updates.

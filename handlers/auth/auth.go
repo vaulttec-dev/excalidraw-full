@@ -339,7 +339,9 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	orgs := githubMemberships(client, githubUser.Login)
-	if !IsAccessAllowed(githubUser.Login, orgs) {
+	subject := fmt.Sprintf("github:%d", githubUser.ID)
+	ConfirmMembership(subject, orgs)
+	if !IsAccessAllowed(subject, githubUser.Login, orgs) {
 		logrus.WithField("login", githubUser.Login).Warn("rejected login: not in the login allowlist or an allowed organisation")
 		http.Redirect(w, r, "/auth/denied", http.StatusTemporaryRedirect)
 		return
@@ -347,7 +349,7 @@ func HandleCallback(w http.ResponseWriter, r *http.Request) {
 
 	// Create user object using Subject instead of GitHubID
 	user := &core.User{
-		Subject:   fmt.Sprintf("github:%d", githubUser.ID),
+		Subject:   subject,
 		Login:     githubUser.Login,
 		AvatarURL: githubUser.AvatarURL,
 		Name:      githubUser.Name,
@@ -430,7 +432,7 @@ func ParseJWT(tokenString string) (*AppClaims, error) {
 		if claims.Use != "" {
 			return nil, fmt.Errorf("token is a %s, not an access token", claims.Use)
 		}
-		if !IsAccessAllowed(claims.Login, claims.Orgs) {
+		if !IsAccessAllowed(claims.Subject, claims.Login, claims.Orgs) {
 			return nil, fmt.Errorf("login %q is not allowed on this instance", claims.Login)
 		}
 		return claims, nil

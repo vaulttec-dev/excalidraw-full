@@ -11,7 +11,7 @@
 | Редактор | сабмодуль `excalidraw` → форк [`vaulttec-dev/excalidraw`](https://github.com/vaulttec-dev/excalidraw) | апстрім + панель «Дошки», меню акаунта, аватарки GitHub (`excalidraw-app/selfhost/`) |
 | Кімнати | `handlers/api/firebase` | REST-шим Firestore: редактор зберігає кімнату в «Firestore», а насправді — у сховищі. `main.go` при роздачі бандла підміняє `firestore.googleapis.com` на хост інстансу |
 | Live-співпраця | `main.go` (socket.io) | протокол `excalidraw-room`, разом із режимом «стежити» |
-| Дошки | `handlers/api/boards` | спільний список: кожна дошка — кімната з ключем і назвою; версії (`handlers/api/history`) і кошик |
+| Дошки | `handlers/api/boards` | спільний список: кожна дошка — кімната з ключем і назвою; версії (`handlers/api/history`) і кошик. Редагувати може кожен, видаляти (у кошик і назавжди) — автор дошки або адмін організації з `ALLOWED_GITHUB_ORGS` |
 | Вхід | `middleware/session.go`, `handlers/auth` | увесь інстанс за GitHub OAuth; доступ — логіни або організації |
 | MCP | `handlers/mcpserver`, `handlers/oauth` | `/mcp` (streamable HTTP) з OAuth-входом через GitHub: `list_boards`, `create_board`, `read_board`, `update_board` |
 | «Поділитися → посилання» | `handlers/api/documents` | зашифровані знімки `#json=` |
@@ -32,6 +32,7 @@
 | `JWT_SECRET` | ключ підпису сесій, OAuth-токенів MCP і client id |
 | `ALLOWED_GITHUB_ORGS` | організації, активні учасники яких мають доступ (через кому) |
 | `ALLOWED_GITHUB_LOGINS` | окремі логіни поза організаціями; `*` — будь-хто. Обидві змінні порожні — не пускати нікого |
+| `GITHUB_ORG_MEMBERS_TOKEN` | fine-grained токен організації лише з Members: Read-only. З ним кожні 5 хвилин сервер звіряє членство й викидає тих, хто вийшов з `ALLOWED_GITHUB_ORGS`: сесії, MCP-токени (зокрема refresh) і відкриті дошки. Збій GitHub чи більше двох «вибулих» за раз — нікого, лише помилка в лозі. З нього ж сервер знає адмінів організації. Без токена членство перевіряється лише при вході, а чужі дошки не може видаляти ніхто |
 | `STORAGE_TYPE` | `s3` (прод), `sqlite`, `filesystem` або порожньо (пам'ять) |
 | `S3_BUCKET_NAME`, `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_ENDPOINT_URL` | для `s3`; для R2 — `AWS_REGION=auto`, `AWS_ENDPOINT_URL=https://<account>.r2.cloudflarestorage.com` |
 | `DATA_SOURCE_NAME` / `LOCAL_STORAGE_PATH` | для `sqlite` / `filesystem` |

@@ -60,7 +60,7 @@ func VerifyGitHubToken(ctx context.Context, token string) (*AppClaims, bool) {
 		if time.Now().Before(verdict.expires) {
 			// Checked against the current configuration each time, so taking
 			// a login or an organisation off the lists applies at once.
-			if verdict.claims != nil && IsAccessAllowed(verdict.claims.Login, verdict.claims.Orgs) {
+			if verdict.claims != nil && IsAccessAllowed(verdict.claims.Subject, verdict.claims.Login, verdict.claims.Orgs) {
 				return verdict.claims, true
 			}
 			return nil, false
@@ -68,7 +68,10 @@ func VerifyGitHubToken(ctx context.Context, token string) (*AppClaims, bool) {
 	}
 
 	claims, err := lookUpGitHubToken(ctx, token)
-	if err != nil || !IsAccessAllowed(claims.Login, claims.Orgs) {
+	if err == nil {
+		ConfirmMembership(claims.Subject, claims.Orgs)
+	}
+	if err != nil || !IsAccessAllowed(claims.Subject, claims.Login, claims.Orgs) {
 		if err != nil {
 			logrus.WithError(err).Debug("GitHub token rejected")
 		} else {
