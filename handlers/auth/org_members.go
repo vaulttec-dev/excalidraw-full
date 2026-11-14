@@ -276,10 +276,11 @@ func isOrgMember(ctx context.Context, client *http.Client, token, org, githubID 
 	}
 }
 
-// SubjectFromHeaders identifies the account behind a socket.io handshake, by
-// its session cookie or bearer token, so that its sockets can be closed when
-// it is revoked. It returns "" when there is none.
-func SubjectFromHeaders(headers map[string][]string) string {
+// ClaimsFromHeaders identifies the account behind a socket.io handshake, by
+// its session cookie or bearer token: its sockets are closed when it is
+// revoked, and what it sends is held to what it may change. It returns nil when
+// there is none.
+func ClaimsFromHeaders(headers map[string][]string) *AppClaims {
 	h := http.Header{}
 	for key, values := range headers {
 		for _, value := range values {
@@ -288,13 +289,11 @@ func SubjectFromHeaders(headers map[string][]string) string {
 	}
 	if cookie, err := (&http.Request{Header: h}).Cookie(SessionCookieName); err == nil {
 		if claims, err := ParseJWT(cookie.Value); err == nil {
-			return claims.Subject
+			return claims
 		}
 	}
 	if header := h.Get("Authorization"); header != "" {
-		if claims := ClaimsFromBearer(context.Background(), header); claims != nil {
-			return claims.Subject
-		}
+		return ClaimsFromBearer(context.Background(), header)
 	}
-	return ""
+	return nil
 }

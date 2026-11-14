@@ -157,6 +157,12 @@ func (t *tools) createBoard(ctx context.Context, _ *mcp.CallToolRequest, in crea
 	if err != nil {
 		return nil, nil, err
 	}
+	folderRef := strings.TrimSpace(in.Folder)
+	if folderRef != "" {
+		if f, ok := boards.FindFolder(ctx, t.store, folderRef); ok && !boards.MayEditFolder(ctx, t.store, t.author, f.ID) {
+			return nil, nil, fmt.Errorf("folder %q is view-only for %s; create the board outside it or in another folder", f.Name, t.author)
+		}
+	}
 
 	idBytes := make([]byte, 10)
 	keyBytes := make([]byte, 16)
@@ -172,7 +178,7 @@ func (t *tools) createBoard(ctx context.Context, _ *mcp.CallToolRequest, in crea
 	if err := boards.Create(ctx, t.store, id, key, in.Name, t.author); err != nil {
 		return nil, nil, err
 	}
-	if folderRef := strings.TrimSpace(in.Folder); folderRef != "" {
+	if folderRef != "" {
 		f, ok := boards.FindFolder(ctx, t.store, folderRef)
 		if !ok {
 			if f, err = boards.CreateFolder(ctx, t.store, folderRef, t.author); err != nil {
@@ -214,6 +220,9 @@ func (t *tools) updateBoard(ctx context.Context, _ *mcp.CallToolRequest, in upda
 	id, key, name, err := t.resolve(ctx, in.Board)
 	if err != nil {
 		return nil, nil, err
+	}
+	if !boards.MayWriteRoom(ctx, t.store, t.author, id) {
+		return nil, nil, fmt.Errorf("board %q is in a folder that is view-only for %s", name, t.author)
 	}
 	current, err := scene.Load(ctx, t.store, id, key)
 	if err != nil {

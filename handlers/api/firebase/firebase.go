@@ -71,6 +71,16 @@ const roomOwner = "rooms"
 // RoomOwner is the namespace rooms are stored under, for callers that list them.
 const RoomOwner = roomOwner
 
+// writeGuard decides whether a request may save a room's scene. Whether a board
+// may be changed depends on its folder, which the board list knows and this
+// package cannot import, so the list hands the check over at startup.
+var writeGuard func(r *http.Request, room string) bool
+
+// SetWriteGuard installs the check saving a room's scene goes through.
+func SetWriteGuard(guard func(r *http.Request, room string) bool) {
+	writeGuard = guard
+}
+
 // DocumentPath is the Firestore document path the editor uses for a room. The
 // project id is the one baked into the frontend build.
 func DocumentPath(room string) string {
@@ -318,6 +328,11 @@ func HandleBatchCommit(store core.CanvasStore) http.HandlerFunc {
 		}
 
 		update := data.Writes[0].Update
+		if room, ok := strings.CutPrefix(update.Name, DocumentPath("")); ok && writeGuard != nil && !writeGuard(r, room) {
+			render.Status(r, http.StatusForbidden)
+			render.JSON(w, r, map[string]string{"error": "this board is view-only for you"})
+			return
+		}
 		if err := saveRoom(r, store, update.Name, update.Fields); err != nil {
 			logrus.WithError(err).WithField("room", update.Name).Error("failed to persist room")
 			render.Status(r, http.StatusInternalServerError)

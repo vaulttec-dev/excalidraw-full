@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	_ "embed"
 	"excalidraw-complete/handlers/api/boards"
@@ -296,6 +297,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 	r.Get("/boards", boards.HandlePage)
 	r.Route("/api/boards", func(r chi.Router) {
 		r.Get("/", boards.HandleList(store))
+		r.Get("/{id}", boards.HandleGet(store))
 		r.Put("/{id}", boards.HandlePut(store))
 		r.Put("/{id}/folder", boards.HandleMoveBoard(store))
 		r.Delete("/{id}", boards.HandleDelete(store))
@@ -309,6 +311,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Get("/", boards.HandleFolders(store))
 		r.Post("/", boards.HandleCreateFolder(store))
 		r.Put("/{id}", boards.HandleRenameFolder(store))
+		r.Put("/{id}/access", boards.HandleFolderAccess(store))
 		r.Delete("/{id}", boards.HandleDeleteFolder(store))
 	})
 
@@ -331,7 +334,18 @@ func setupRouter(store stores.Store) *chi.Mux {
 	return r
 }
 
-func setupSocketIO() *socketio.Server {
+// socketLogins holds the login behind each socket, for checking what it sends:
+// a board in a folder that is view-only for an account takes no changes from
+// it.
+var socketLogins sync.Map // socketio.SocketId -> string
+
+func socketMayWrite(store stores.Store, id socketio.SocketId, room string) bool {
+	login, _ := socketLogins.Load(id)
+	name, _ := login.(string)
+	return boards.MayWriteRoom(context.Background(), store, name, room)
+}
+
+func setupSocketIO(store stores.Store) *socketio.Server {
 	opts := socketio.DefaultServerOptions()
 	opts.SetMaxHttpBufferSize(5000000)
 	opts.SetPath("/socket.io")
@@ -346,9 +360,14 @@ func setupSocketIO() *socketio.Server {
 		socket := clients[0].(*socketio.Socket)
 		me := socket.Id()
 		myRoom := socketio.Room(me)
-		if subject := auth.SubjectFromHeaders(socket.Handshake().Headers); subject != "" {
-			socket.Join(accountRoom(subject))
+		login := ""
+		if claims := auth.ClaimsFromHeaders(socket.Handshake().Headers); claims != nil {
+			if claims.Subject != "" {
+				socket.Join(accountRoom(claims.Subject))
+			}
+			login = claims.Login
 		}
+		socketLogins.Store(me, login)
 		ioo.To(myRoom).Emit("init-room")
 		utils.Log().Printf("init room %v\n", myRoom)
 		socket.On("join-room", func(datas ...any) {
@@ -356,11 +375,26 @@ func setupSocketIO() *socketio.Server {
 			utils.Log().Printf("Socket %v has joined %v\n", me, room)
 			socket.Join(room)
 			ioo.In(room).FetchSockets()(func(usersInRoom []*socketio.RemoteSocket, _ error) {
-				if len(usersInRoom) <= 1 {
-					ioo.To(myRoom).Emit("first-in-room")
-				} else {
+				others, writers := 0, 0
+				for _, user := range usersInRoom {
+					if user.Id() == me {
+						continue
+					}
+					others++
+					if socketMayWrite(store, user.Id(), string(room)) {
+						writers++
+					}
+				}
+				if others > 0 {
 					utils.Log().Printf("emit new user %v in room %v\n", me, room)
 					socket.Broadcast().To(room).Emit("new-user", me)
+				}
+				// The newcomer waits for the scene from somebody already in
+				// the room, but changes from those who may only look are not
+				// relayed. With nobody else who may change it, the newcomer
+				// reads the board from storage, as the first one in does.
+				if writers == 0 {
+					ioo.To(myRoom).Emit("first-in-room")
 				}
 
 				// Inform all clients by new users.
@@ -378,6 +412,13 @@ func setupSocketIO() *socketio.Server {
 		})
 		socket.On("server-broadcast", func(datas ...any) {
 			roomID := datas[0].(string)
+			// Scene changes. The volatile channel below carries only cursors
+			// and presence, which those who may only look still share.
+			if !boards.MayWriteRoom(context.Background(), store, login, roomID) {
+				// The tab is told, so it shows the board as view-only.
+				socket.Emit("read-only", roomID)
+				return
+			}
 			socket.Broadcast().To(socketio.Room(roomID)).Emit("client-broadcast", datas[1], datas[2])
 		})
 		socket.On("server-volatile-broadcast", func(datas ...any) {
@@ -435,6 +476,7 @@ func setupSocketIO() *socketio.Server {
 			}
 		})
 		socket.On("disconnect", func(datas ...any) {
+			socketLogins.Delete(me)
 			socket.RemoveAllListeners("")
 			socket.Disconnect(true)
 		})
@@ -506,8 +548,14 @@ func main() {
 
 	r := setupRouter(store)
 
-	ioo := setupSocketIO()
+	ioo := setupSocketIO(store)
 	r.Mount("/socket.io/", ioo.ServeHandler(nil))
+
+	// Saving a board goes through the same check as the list: a board in a
+	// folder that is view-only for the account is not saved.
+	firebase.SetWriteGuard(func(r *http.Request, room string) bool {
+		return boards.MayWriteRequest(r, store, room)
+	})
 
 	// An account that has left the organisation loses its open boards too.
 	auth.StartMembershipSync(func(subject string) {

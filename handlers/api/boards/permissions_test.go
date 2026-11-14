@@ -52,7 +52,12 @@ func TestOnlyAuthorOrAdminDeletes(t *testing.T) {
 
 	var listed []Board
 	_ = json.NewDecoder(call(http.MethodGet, "/api/boards", "alice").Body).Decode(&listed)
+	// The memory store is shared between tests, so the list holds their boards
+	// too.
 	for _, b := range listed {
+		if b.ID != mine && b.ID != theirs {
+			continue
+		}
 		if want := b.ID == mine; b.CanDelete != want {
 			t.Fatalf("alice canDelete %s = %v, want %v", b.ID, b.CanDelete, want)
 		}
@@ -75,6 +80,9 @@ func TestOnlyAuthorOrAdminDeletes(t *testing.T) {
 	var trash []TrashedBoard
 	_ = json.NewDecoder(call(http.MethodGet, "/api/boards/trash", "alice").Body).Decode(&trash)
 	for _, item := range trash {
+		if item.ID != mine && item.ID != theirs {
+			continue
+		}
 		if want := item.ID == mine; item.CanPurge != want {
 			t.Fatalf("alice canPurge %s = %v, want %v", item.ID, item.CanPurge, want)
 		}

@@ -1,33 +1,142 @@
 package boards
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"strings"
 
+	"excalidraw-complete/core"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/middleware"
 )
 
-// mayDelete tells whether the request's account may delete a board created by
-// createdBy: its author, or an administrator of an allowed GitHub
-// organisation. Anybody may edit any board; deleting is narrower because it
-// takes the board away from the whole team.
-func mayDelete(r *http.Request, createdBy string) bool {
-	// Sign-in off: an open local instance has no accounts to tell apart.
-	if os.Getenv("GITHUB_CLIENT_ID") == "" {
-		return true
+// Who may do what.
+//
+// A board outside any folder may be changed by anybody, and deleted by its
+// author or an administrator of an allowed GitHub organisation. A folder's
+// author and the administrators may do anything in it; everybody else gets
+// what the folder's access says: looking only ("view", the default) or changing
+// and deleting its boards too ("edit"). Renaming or deleting a folder and
+// changing its access stays with its author and the administrators.
+
+const (
+	accessView = "view"
+	accessEdit = "edit"
+)
+
+// account is who a request, a socket or an MCP call acts for.
+type account struct {
+	login string
+	// open is an instance with sign-in off: it has no accounts to tell apart,
+	// so everybody may do everything.
+	open bool
+}
+
+func signInOff() bool { return os.Getenv("GITHUB_CLIENT_ID") == "" }
+
+func accountOf(r *http.Request) account {
+	if signInOff() {
+		return account{open: true}
 	}
-	claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims)
-	if !ok || claims == nil || claims.Login == "" {
-		return false
+	if claims, ok := r.Context().Value(middleware.ClaimsContextKey).(*auth.AppClaims); ok && claims != nil {
+		return account{login: claims.Login}
 	}
-	return strings.EqualFold(claims.Login, createdBy) || isOrgAdmin(claims.Login)
+	return account{}
+}
+
+func accountFor(login string) account {
+	if signInOff() {
+		return account{open: true}
+	}
+	return account{login: login}
 }
 
 // isOrgAdmin is replaced in tests.
 var isOrgAdmin = auth.IsOrgAdmin
 
-func forbidDelete(w http.ResponseWriter) {
-	http.Error(w, "only the board's author or an organisation admin can delete it", http.StatusForbidden)
+// privileged is the author of something, or an administrator.
+func (a account) privileged(author string) bool {
+	if a.open {
+		return true
+	}
+	if a.login == "" {
+		return false
+	}
+	return strings.EqualFold(a.login, author) || isOrgAdmin(a.login)
+}
+
+func (a account) mayManageFolder(f *folder) bool {
+	return a.privileged(f.CreatedBy)
+}
+
+func (a account) mayEditFolder(f *folder) bool {
+	if f.Access == accessEdit && a.login != "" {
+		return true
+	}
+	return a.privileged(f.CreatedBy)
+}
+
+// folderOfLocked returns the folder a board is in, or nil when it is in none
+// (or in one deleted since). The caller holds registry.mu.
+func folderOfLocked(folderID string) *folder {
+	if folderID == "" {
+		return nil
+	}
+	return registry.folders[folderID]
+}
+
+// mayEditLocked tells whether the account may change a board in folderID:
+// draw on it, rename it, move it or restore a version of it.
+func (a account) mayEditLocked(folderID string) bool {
+	f := folderOfLocked(folderID)
+	return f == nil || a.mayEditFolder(f)
+}
+
+// mayDeleteLocked tells whether the account may move a board to the trash. In
+// a folder, whoever may change its boards may; outside one, the board's author
+// or an administrator.
+func (a account) mayDeleteLocked(e entry) bool {
+	if f := folderOfLocked(e.Folder); f != nil {
+		return a.mayEditFolder(f)
+	}
+	return a.privileged(e.CreatedBy)
+}
+
+// mayPurge tells whether the account may delete a board in the trash for good:
+// only its author or an administrator, wherever it was.
+func (a account) mayPurge(e entry) bool {
+	return a.privileged(e.CreatedBy)
+}
+
+// MayWriteRoom tells whether the account signed in as login may change the
+// board in a collaboration room. A room that is not listed is treated as a
+// board outside any folder. It serves the collaboration server and the
+// Firestore-compatible API, which see a room, not a request to the list.
+func MayWriteRoom(ctx context.Context, store core.CanvasStore, login, room string) bool {
+	a := accountFor(login)
+	if a.open {
+		return true
+	}
+	if ensureLoaded(ctx, store) != nil {
+		// Without the list the board's folder is unknown. The list stays in
+		// memory once read, so this happens only until the first read succeeds.
+		return false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	rec := registry.records[room]
+	return rec == nil || a.mayEditLocked(rec.Folder)
+}
+
+// MayWriteRequest is MayWriteRoom for an HTTP request.
+func MayWriteRequest(r *http.Request, store core.CanvasStore, room string) bool {
+	if signInOff() {
+		return true
+	}
+	return MayWriteRoom(r.Context(), store, accountOf(r).login, room)
+}
+
+func forbid(w http.ResponseWriter, message string) {
+	http.Error(w, message, http.StatusForbidden)
 }

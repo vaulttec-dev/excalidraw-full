@@ -174,17 +174,17 @@ func TestListedLoginsAreNotRevoked(t *testing.T) {
 	}
 }
 
-func TestSubjectFromHeaders(t *testing.T) {
+func TestClaimsFromHeaders(t *testing.T) {
 	jwtSecret = []byte("test-secret")
 	resetAllowlist(t, "alice", "")
 	withSubject := AppClaims{Login: "alice"}
 	withSubject.Subject = "github:9"
 	token := signed(t, withSubject)
 	headers := map[string][]string{"cookie": {SessionCookieName + "=" + token}}
-	if got := SubjectFromHeaders(headers); got != "github:9" {
-		t.Fatalf("SubjectFromHeaders = %q, want github:9", got)
+	if got := ClaimsFromHeaders(headers); got == nil || got.Subject != "github:9" || got.Login != "alice" {
+		t.Fatalf("ClaimsFromHeaders = %+v, want github:9 alice", got)
 	}
-	if got := SubjectFromHeaders(map[string][]string{}); got != "" {
-		t.Fatalf("SubjectFromHeaders without credentials = %q", got)
+	if got := ClaimsFromHeaders(map[string][]string{}); got != nil {
+		t.Fatalf("ClaimsFromHeaders without credentials = %+v", got)
 	}
 }

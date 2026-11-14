@@ -19,8 +19,8 @@ import (
 )
 
 // Folders group boards in the list. There is one level of them: a board is in
-// one folder or in none. A folder holds nothing but its name; which boards are
-// in it is recorded on the boards.
+// one folder or in none. A folder holds its name and who may change its boards
+// (see permissions.go); which boards are in it is recorded on the boards.
 
 // foldersOwner is the storage namespace folders live under.
 const foldersOwner = "folders"
@@ -29,6 +29,16 @@ var folderIDPattern = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
 type folderEntry struct {
 	CreatedBy string `json:"createdBy"`
+	// Access is what everybody but the folder's author and the administrators
+	// may do with its boards: accessEdit, or else look only.
+	Access string `json:"access,omitempty"`
+}
+
+func (e folderEntry) access() string {
+	if e.Access == accessEdit {
+		return accessEdit
+	}
+	return accessView
 }
 
 type folder struct {
@@ -48,6 +58,25 @@ type Folder struct {
 	Name      string    `json:"name"`
 	CreatedBy string    `json:"createdBy"`
 	CreatedAt time.Time `json:"createdAt"`
+	// Access is "view" or "edit": what everybody but the author and the
+	// administrators may do with the folder's boards.
+	Access string `json:"access"`
+	// CanEdit tells the reader whether they may change the folder's boards.
+	CanEdit bool `json:"canEdit"`
+	// CanManage tells the reader whether they may rename or delete the folder
+	// and change its access.
+	CanManage bool `json:"canManage"`
+}
+
+func toFolder(id string, f *folder) Folder {
+	return Folder{ID: id, Name: f.name, CreatedBy: f.CreatedBy, CreatedAt: f.createdAt, Access: f.access()}
+}
+
+func (a account) folderView(id string, f *folder) Folder {
+	out := toFolder(id, f)
+	out.CanEdit = a.mayEditFolder(f)
+	out.CanManage = a.mayManageFolder(f)
+	return out
 }
 
 func readFolders(ctx context.Context, store core.CanvasStore) (map[string]*folder, error) {
@@ -85,7 +114,7 @@ func Folders(ctx context.Context, store core.CanvasStore) ([]Folder, error) {
 	registry.mu.RLock()
 	folders := make([]Folder, 0, len(registry.folders))
 	for id, f := range registry.folders {
-		folders = append(folders, Folder{ID: id, Name: f.name, CreatedBy: f.CreatedBy, CreatedAt: f.createdAt})
+		folders = append(folders, toFolder(id, f))
 	}
 	registry.mu.RUnlock()
 	sort.Slice(folders, func(i, j int) bool {
@@ -94,7 +123,8 @@ func Folders(ctx context.Context, store core.CanvasStore) ([]Folder, error) {
 	return folders, nil
 }
 
-// CreateFolder adds a folder.
+// CreateFolder adds a folder. Others may only look at its boards until its
+// author lets them edit.
 func CreateFolder(ctx context.Context, store core.CanvasStore, name, author string) (Folder, error) {
 	name, err := folderName(name)
 	if err != nil {
@@ -115,7 +145,18 @@ func CreateFolder(ctx context.Context, store core.CanvasStore, name, author stri
 	registry.mu.Lock()
 	registry.folders[id] = f
 	registry.mu.Unlock()
-	return Folder{ID: id, Name: f.name, CreatedBy: author, CreatedAt: f.createdAt}, nil
+	return toFolder(id, f), nil
+}
+
+// MayEditFolder tells whether the account signed in as login may change the
+// boards in a folder.
+func MayEditFolder(ctx context.Context, store core.CanvasStore, login, folderID string) bool {
+	if ensureLoaded(ctx, store) != nil {
+		return false
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	return accountFor(login).mayEditLocked(folderID)
 }
 
 // FindFolder returns a folder by its id or, ignoring case, its name.
@@ -168,7 +209,7 @@ var (
 	errNoFolder = fmt.Errorf("no such folder")
 )
 
-// HandleFolders lists the folders.
+// HandleFolders lists the folders, with what the reader may do in each.
 func HandleFolders(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		folders, err := Folders(r.Context(), store)
@@ -176,8 +217,53 @@ func HandleFolders(store core.CanvasStore) http.HandlerFunc {
 			unavailable(w, err)
 			return
 		}
+		a := accountOf(r)
+		registry.mu.RLock()
+		for i := range folders {
+			if f := registry.folders[folders[i].ID]; f != nil {
+				folders[i] = a.folderView(folders[i].ID, f)
+			}
+		}
+		registry.mu.RUnlock()
 		render.JSON(w, r, folders)
 	}
+}
+
+// managedFolder reads the folder a request names and checks that the request
+// may manage it. On failure it has answered the request and returns nil.
+func managedFolder(w http.ResponseWriter, r *http.Request, store core.CanvasStore) (string, *folder) {
+	id := chi.URLParam(r, "id")
+	if !folderIDPattern.MatchString(id) {
+		http.Error(w, "invalid folder id", http.StatusBadRequest)
+		return "", nil
+	}
+	if err := ensureLoaded(r.Context(), store); err != nil {
+		unavailable(w, err)
+		return "", nil
+	}
+	registry.mu.RLock()
+	existing := registry.folders[id]
+	registry.mu.RUnlock()
+	if existing == nil {
+		http.Error(w, "no such folder", http.StatusNotFound)
+		return "", nil
+	}
+	if !accountOf(r).mayManageFolder(existing) {
+		forbid(w, "only the folder's author or an organisation admin can change the folder")
+		return "", nil
+	}
+	return id, existing
+}
+
+// saveFolder writes a changed folder and puts it in the list.
+func saveFolder(ctx context.Context, store core.CanvasStore, id string, f *folder) error {
+	if err := store.Save(ctx, f.canvas(id)); err != nil {
+		return err
+	}
+	registry.mu.Lock()
+	registry.folders[id] = f
+	registry.mu.Unlock()
+	return nil
 }
 
 type folderBody struct {
@@ -210,7 +296,6 @@ func HandleCreateFolder(store core.CanvasStore) http.HandlerFunc {
 // HandleRenameFolder renames a folder.
 func HandleRenameFolder(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
 		var body folderBody
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid body", http.StatusBadRequest)
@@ -221,28 +306,49 @@ func HandleRenameFolder(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := ensureLoaded(r.Context(), store); err != nil {
-			unavailable(w, err)
-			return
-		}
-		registry.mu.RLock()
-		existing := registry.folders[id]
-		registry.mu.RUnlock()
+		id, existing := managedFolder(w, r, store)
 		if existing == nil {
-			http.Error(w, "no such folder", http.StatusNotFound)
 			return
 		}
 
 		next := *existing
 		next.name = name
-		if err := store.Save(r.Context(), next.canvas(id)); err != nil {
+		if err := saveFolder(r.Context(), store, id, &next); err != nil {
 			http.Error(w, "failed to rename folder", http.StatusInternalServerError)
 			return
 		}
-		registry.mu.Lock()
-		registry.folders[id] = &next
-		registry.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// HandleFolderAccess sets what everybody but the folder's author and the
+// administrators may do with its boards: {"access": "view"} or "edit".
+func HandleFolderAccess(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Access string `json:"access"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.Access != accessView && body.Access != accessEdit {
+			http.Error(w, `access must be "view" or "edit"`, http.StatusBadRequest)
+			return
+		}
+		id, existing := managedFolder(w, r, store)
+		if existing == nil {
+			return
+		}
+
+		next := *existing
+		next.Access = body.Access
+		if err := saveFolder(r.Context(), store, id, &next); err != nil {
+			http.Error(w, "failed to change the folder's access", http.StatusInternalServerError)
+			return
+		}
+		logrus.WithFields(logrus.Fields{"folder": id, "access": body.Access, "by": author(r)}).Info("folder access changed")
+		render.JSON(w, r, accountOf(r).folderView(id, &next))
 	}
 }
 
@@ -251,17 +357,13 @@ func HandleRenameFolder(store core.CanvasStore) http.HandlerFunc {
 func HandleDeleteFolder(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		id := chi.URLParam(r, "id")
-		if !folderIDPattern.MatchString(id) {
-			http.Error(w, "invalid folder id", http.StatusBadRequest)
-			return
-		}
-		if err := ensureLoaded(ctx, store); err != nil {
-			unavailable(w, err)
+		// Only those who manage the folder: its boards would come out of it
+		// open to everybody.
+		id, existing := managedFolder(w, r, store)
+		if existing == nil {
 			return
 		}
 		registry.mu.RLock()
-		_, exists := registry.folders[id]
 		var inside []string
 		for boardID, rec := range registry.records {
 			if rec.Folder == id {
@@ -269,10 +371,6 @@ func HandleDeleteFolder(store core.CanvasStore) http.HandlerFunc {
 			}
 		}
 		registry.mu.RUnlock()
-		if !exists {
-			http.Error(w, "no such folder", http.StatusNotFound)
-			return
-		}
 
 		// Boards first: if moving one fails, the folder is still there and
 		// deleting it can be retried.
@@ -295,6 +393,8 @@ func HandleDeleteFolder(store core.CanvasStore) http.HandlerFunc {
 }
 
 // HandleMoveBoard puts a board in a folder: {"folder": "<id>"}, or "" for none.
+// It takes the right to change boards both where the board is and where it
+// goes.
 func HandleMoveBoard(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -304,7 +404,21 @@ func HandleMoveBoard(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "invalid body", http.StatusBadRequest)
 			return
 		}
-		switch err := MoveBoard(r.Context(), store, chi.URLParam(r, "id"), body.Folder); err {
+		id := chi.URLParam(r, "id")
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		a := accountOf(r)
+		registry.mu.RLock()
+		rec := registry.records[id]
+		allowed := rec == nil || (a.mayEditLocked(rec.Folder) && a.mayEditLocked(body.Folder))
+		registry.mu.RUnlock()
+		if !allowed {
+			forbid(w, "this folder is view-only for you")
+			return
+		}
+		switch err := MoveBoard(r.Context(), store, id, body.Folder); err {
 		case nil:
 			w.WriteHeader(http.StatusNoContent)
 		case errNoBoard:

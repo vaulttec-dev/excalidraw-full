@@ -80,8 +80,20 @@ type Board struct {
 	Folder    string    `json:"folder,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	EditedAt  time.Time `json:"editedAt"`
+	// CanEdit tells the list's reader whether they may change the board: draw
+	// on it, rename it, move it, restore a version of it.
+	CanEdit bool `json:"canEdit"`
 	// CanDelete tells the list's reader whether they may delete the board.
 	CanDelete bool `json:"canDelete"`
+}
+
+// boardView is a board with what the account may do with it. The caller holds
+// registry.mu.
+func (a account) boardViewLocked(id string, rec *record) Board {
+	board := toBoard(id, rec)
+	board.CanEdit = a.mayEditLocked(rec.Folder)
+	board.CanDelete = a.mayDeleteLocked(rec.entry)
+	return board
 }
 
 // registry holds the whole list in memory. Reading it from the object store
@@ -415,10 +427,39 @@ func HandleList(store core.CanvasStore) http.HandlerFunc {
 			unavailable(w, err)
 			return
 		}
+		a := accountOf(r)
+		registry.mu.RLock()
 		for i := range boards {
-			boards[i].CanDelete = mayDelete(r, boards[i].CreatedBy)
+			if rec := registry.records[boards[i].ID]; rec != nil {
+				boards[i] = a.boardViewLocked(boards[i].ID, rec)
+			}
 		}
+		registry.mu.RUnlock()
 		render.JSON(w, r, boards)
+	}
+}
+
+// HandleGet returns one board with what the reader may do with it; the editor
+// asks when it opens a board, to know whether it may be changed.
+func HandleGet(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		registry.mu.RLock()
+		rec := registry.records[id]
+		var board Board
+		if rec != nil {
+			board = accountOf(r).boardViewLocked(id, rec)
+		}
+		registry.mu.RUnlock()
+		if rec == nil {
+			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+		render.JSON(w, r, board)
 	}
 }
 
@@ -479,6 +520,13 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
+			registry.mu.RLock()
+			allowed := accountOf(r).mayEditLocked(existing.Folder)
+			registry.mu.RUnlock()
+			if !allowed {
+				forbid(w, "this folder is view-only for you")
+				return
+			}
 			next = *existing
 			next.name = name
 			status = http.StatusNoContent
@@ -519,13 +567,14 @@ func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 		}
 		registry.mu.RLock()
 		rec := registry.records[id]
+		allowed := rec != nil && accountOf(r).mayDeleteLocked(rec.entry)
 		registry.mu.RUnlock()
 		if rec == nil {
 			http.Error(w, "no such board", http.StatusNotFound)
 			return
 		}
-		if !mayDelete(r, rec.CreatedBy) {
-			forbidDelete(w)
+		if !allowed {
+			forbid(w, "only the board's author, the folder's editors or an organisation admin can delete it")
 			return
 		}
 
@@ -571,6 +620,9 @@ type TrashedBoard struct {
 	CreatedBy string    `json:"createdBy"`
 	DeletedBy string    `json:"deletedBy"`
 	DeletedAt time.Time `json:"deletedAt"`
+	// CanRestore tells the reader whether they may bring it back: it returns
+	// to its folder, so that takes the right to change the folder's boards.
+	CanRestore bool `json:"canRestore"`
 	// CanPurge tells the reader whether they may delete it for good.
 	CanPurge bool `json:"canPurge"`
 }
@@ -582,11 +634,12 @@ func HandleTrash(store core.CanvasStore) http.HandlerFunc {
 			unavailable(w, err)
 			return
 		}
+		a := accountOf(r)
 		registry.mu.RLock()
 		items := make([]TrashedBoard, 0, len(registry.trash))
 		for id, t := range registry.trash {
 			items = append(items, TrashedBoard{ID: id, Name: t.name, CreatedBy: t.CreatedBy, DeletedBy: t.DeletedBy, DeletedAt: t.deletedAt,
-				CanPurge: mayDelete(r, t.CreatedBy)})
+				CanRestore: a.mayEditLocked(t.Folder), CanPurge: a.mayPurge(t.entry)})
 		}
 		registry.mu.RUnlock()
 		sort.Slice(items, func(i, j int) bool { return items[i].DeletedAt.After(items[j].DeletedAt) })
@@ -603,11 +656,17 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 			unavailable(w, err)
 			return
 		}
+		a := accountOf(r)
 		registry.mu.RLock()
 		item := registry.trash[id]
+		allowed := item != nil && a.mayEditLocked(item.Folder)
 		registry.mu.RUnlock()
 		if item == nil {
 			http.Error(w, "no such board in the trash", http.StatusNotFound)
+			return
+		}
+		if !allowed {
+			forbid(w, "the board's folder is view-only for you")
 			return
 		}
 
@@ -635,9 +694,8 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 		registry.mu.Lock()
 		registry.records[id] = rec
 		delete(registry.trash, id)
+		board := a.boardViewLocked(id, rec)
 		registry.mu.Unlock()
-		board := toBoard(id, rec)
-		board.CanDelete = mayDelete(r, rec.CreatedBy)
 		render.JSON(w, r, board)
 	}
 }
@@ -660,8 +718,8 @@ func HandlePurge(store core.CanvasStore) http.HandlerFunc {
 			http.Error(w, "no such board in the trash", http.StatusNotFound)
 			return
 		}
-		if !mayDelete(r, item.CreatedBy) {
-			forbidDelete(w)
+		if !accountOf(r).mayPurge(item.entry) {
+			forbid(w, "only the board's author or an organisation admin can delete it for good")
 			return
 		}
 
@@ -715,6 +773,10 @@ func HandleRestoreVersion(store core.CanvasStore) http.HandlerFunc {
 		board, ok := Find(ctx, store, id)
 		if !ok {
 			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+		if !MayWriteRequest(r, store, id) {
+			forbid(w, "this folder is view-only for you")
 			return
 		}
 		fields, err := history.Load(ctx, store, id, chi.URLParam(r, "version"))
