@@ -3,6 +3,7 @@
 package me
 
 import (
+	"excalidraw-complete/handlers/api/boards"
 	"excalidraw-complete/handlers/auth"
 	"excalidraw-complete/middleware"
 	"net/http"
@@ -14,6 +15,9 @@ type account struct {
 	Login     string `json:"login"`
 	Name      string `json:"name"`
 	AvatarURL string `json:"avatarUrl"`
+	// Admin is an administrator of an allowed organisation, who alone may
+	// empty the trash.
+	Admin bool `json:"admin"`
 }
 
 func HandleMe(w http.ResponseWriter, r *http.Request) {
@@ -23,5 +27,5 @@ func HandleMe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	render.JSON(w, r, account{Login: claims.Login, Name: claims.Name, AvatarURL: claims.AvatarURL})
+	render.JSON(w, r, account{Login: claims.Login, Name: claims.Name, AvatarURL: claims.AvatarURL, Admin: boards.IsAdmin(r)})
 }

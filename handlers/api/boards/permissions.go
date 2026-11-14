@@ -123,10 +123,16 @@ func (a account) mayMoveLocked(e entry) bool {
 	return a.privileged(e.CreatedBy)
 }
 
-// mayPurge tells whether the account may delete a board in the trash for good:
-// only its author or an administrator, wherever it was.
-func (a account) mayPurge(e entry) bool {
-	return a.privileged(e.CreatedBy)
+// mayPurge tells whether the account may delete boards in the trash for good:
+// only an administrator. Nothing leaves the trash by itself.
+func (a account) mayPurge() bool {
+	return a.open || (a.login != "" && isOrgAdmin(a.login))
+}
+
+// IsAdmin tells whether the request comes from an administrator, who may do
+// anything with boards and folders.
+func IsAdmin(r *http.Request) bool {
+	return accountOf(r).mayPurge()
 }
 
 // MayWriteRoom tells whether the account signed in as login may change the

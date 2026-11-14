@@ -44,6 +44,7 @@ func TestOnlyAuthorOrAdminDeletes(t *testing.T) {
 	r.Delete("/api/boards/{id}", HandleDelete(store))
 	r.Get("/api/boards/trash", HandleTrash(store))
 	r.Delete("/api/boards/trash/{id}", HandlePurge(store))
+	r.Delete("/api/boards/trash", HandleEmptyTrash(store))
 	call := func(method, path, login string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		r.ServeHTTP(rec, as(httptest.NewRequest(method, path, nil), login))
@@ -77,20 +78,29 @@ func TestOnlyAuthorOrAdminDeletes(t *testing.T) {
 		t.Fatalf("admin: %d, want 204", rec.Code)
 	}
 
+	// Only an admin deletes for good, even the author's own board.
 	var trash []TrashedBoard
 	_ = json.NewDecoder(call(http.MethodGet, "/api/boards/trash", "alice").Body).Decode(&trash)
 	for _, item := range trash {
-		if item.ID != mine && item.ID != theirs {
-			continue
-		}
-		if want := item.ID == mine; item.CanPurge != want {
-			t.Fatalf("alice canPurge %s = %v, want %v", item.ID, item.CanPurge, want)
+		if (item.ID == mine || item.ID == theirs) && item.CanPurge {
+			t.Fatalf("alice may purge %s", item.ID)
 		}
 	}
-	if rec := call(http.MethodDelete, "/api/boards/trash/"+theirs, "alice"); rec.Code != http.StatusForbidden {
-		t.Fatalf("purging someone else's board: %d, want 403", rec.Code)
+	if rec := call(http.MethodDelete, "/api/boards/trash/"+mine, "alice"); rec.Code != http.StatusForbidden {
+		t.Fatalf("purging own board: %d, want 403", rec.Code)
 	}
-	if rec := call(http.MethodDelete, "/api/boards/trash/"+mine, "alice"); rec.Code != http.StatusNoContent {
-		t.Fatalf("purging own board: %d, want 204", rec.Code)
+	if rec := call(http.MethodDelete, "/api/boards/trash", "alice"); rec.Code != http.StatusForbidden {
+		t.Fatalf("emptying the trash: %d, want 403", rec.Code)
+	}
+	if rec := call(http.MethodDelete, "/api/boards/trash/"+mine, "root"); rec.Code != http.StatusNoContent {
+		t.Fatalf("admin purging: %d, want 204", rec.Code)
+	}
+	if rec := call(http.MethodDelete, "/api/boards/trash", "root"); rec.Code != http.StatusNoContent {
+		t.Fatalf("admin emptying the trash: %d, want 204", rec.Code)
+	}
+	trash = nil
+	_ = json.NewDecoder(call(http.MethodGet, "/api/boards/trash", "root").Body).Decode(&trash)
+	if len(trash) != 0 {
+		t.Fatalf("%d boards left in the trash", len(trash))
 	}
 }

@@ -307,6 +307,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Get("/trash", boards.HandleTrash(store))
 		r.Post("/trash/{id}/restore", boards.HandleRestoreFromTrash(store))
 		r.Delete("/trash/{id}", boards.HandlePurge(store))
+		r.Delete("/trash", boards.HandleEmptyTrash(store))
 	})
 	r.Route("/api/folders", func(r chi.Router) {
 		r.Get("/", boards.HandleFolders(store))
