@@ -300,6 +300,7 @@ func setupRouter(store stores.Store) *chi.Mux {
 		r.Get("/{id}", boards.HandleGet(store))
 		r.Put("/{id}", boards.HandlePut(store))
 		r.Put("/{id}/folder", boards.HandleMoveBoard(store))
+		r.Put("/{id}/access", boards.HandleBoardAccess(store))
 		r.Delete("/{id}", boards.HandleDelete(store))
 		r.Get("/{id}/versions", boards.HandleVersions(store))
 		r.Post("/{id}/versions/{version}/restore", boards.HandleRestoreVersion(store))

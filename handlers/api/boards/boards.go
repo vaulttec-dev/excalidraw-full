@@ -55,6 +55,16 @@ type entry struct {
 	CreatedBy string `json:"createdBy"`
 	// Folder is the id of the folder the board is in; empty for none.
 	Folder string `json:"folder,omitempty"`
+	// Access is what everybody but the board's author and the administrators
+	// may do with it: accessEdit, or else look only (see permissions.go).
+	Access string `json:"access,omitempty"`
+}
+
+func (e entry) access() string {
+	if e.Access == accessEdit {
+		return accessEdit
+	}
+	return accessView
 }
 
 // record is a registry entry as held in memory.
@@ -80,19 +90,30 @@ type Board struct {
 	Folder    string    `json:"folder,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	EditedAt  time.Time `json:"editedAt"`
+	// Access is "view" or "edit": what everybody but the author and the
+	// administrators may do with the board, within what its folder allows.
+	Access string `json:"access"`
 	// CanEdit tells the list's reader whether they may change the board: draw
-	// on it, rename it, move it, restore a version of it.
+	// on it, rename it, restore a version of it.
 	CanEdit bool `json:"canEdit"`
+	// CanMove tells the list's reader whether they may move the board to
+	// another folder or out of one.
+	CanMove bool `json:"canMove"`
 	// CanDelete tells the list's reader whether they may delete the board.
 	CanDelete bool `json:"canDelete"`
+	// CanManage tells the list's reader whether they may set the board's
+	// access.
+	CanManage bool `json:"canManage"`
 }
 
 // boardView is a board with what the account may do with it. The caller holds
 // registry.mu.
 func (a account) boardViewLocked(id string, rec *record) Board {
 	board := toBoard(id, rec)
-	board.CanEdit = a.mayEditLocked(rec.Folder)
-	board.CanDelete = a.mayDeleteLocked(rec.entry)
+	board.CanEdit = a.mayEditLocked(rec.entry)
+	board.CanMove = a.mayMoveLocked(rec.entry)
+	board.CanDelete = board.CanEdit
+	board.CanManage = a.mayManageBoard(rec.entry)
 	return board
 }
 
@@ -359,6 +380,7 @@ func toBoard(id string, rec *record) Board {
 		Folder:    rec.Folder,
 		CreatedAt: rec.createdAt,
 		EditedAt:  rec.createdAt,
+		Access:    rec.access(),
 	}
 	if at, ok := firebase.EditedAt(id); ok && at.After(board.EditedAt) {
 		board.EditedAt = at
@@ -436,6 +458,56 @@ func HandleList(store core.CanvasStore) http.HandlerFunc {
 		}
 		registry.mu.RUnlock()
 		render.JSON(w, r, boards)
+	}
+}
+
+// HandleBoardAccess sets what everybody but the board's author and the
+// administrators may do with it: {"access": "view"} or "edit". Its folder may
+// still allow less.
+func HandleBoardAccess(store core.CanvasStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Access string `json:"access"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid body", http.StatusBadRequest)
+			return
+		}
+		if body.Access != accessView && body.Access != accessEdit {
+			http.Error(w, `access must be "view" or "edit"`, http.StatusBadRequest)
+			return
+		}
+		id := chi.URLParam(r, "id")
+		if err := ensureLoaded(r.Context(), store); err != nil {
+			unavailable(w, err)
+			return
+		}
+		a := accountOf(r)
+		registry.mu.RLock()
+		existing := registry.records[id]
+		allowed := existing != nil && a.mayManageBoard(existing.entry)
+		registry.mu.RUnlock()
+		if existing == nil {
+			http.Error(w, "no such board", http.StatusNotFound)
+			return
+		}
+		if !allowed {
+			forbid(w, "only the board's author or an organisation admin can change its access")
+			return
+		}
+
+		next := *existing
+		next.Access = body.Access
+		if err := store.Save(r.Context(), next.canvas(id)); err != nil {
+			http.Error(w, "failed to change the board's access", http.StatusInternalServerError)
+			return
+		}
+		registry.mu.Lock()
+		registry.records[id] = &next
+		board := a.boardViewLocked(id, &next)
+		registry.mu.Unlock()
+		logrus.WithFields(logrus.Fields{"board": id, "access": body.Access, "by": author(r)}).Info("board access changed")
+		render.JSON(w, r, board)
 	}
 }
 
@@ -521,7 +593,7 @@ func HandlePut(store core.CanvasStore) http.HandlerFunc {
 				return
 			}
 			registry.mu.RLock()
-			allowed := accountOf(r).mayEditLocked(existing.Folder)
+			allowed := accountOf(r).mayEditLocked(existing.entry)
 			registry.mu.RUnlock()
 			if !allowed {
 				forbid(w, "this folder is view-only for you")
@@ -567,7 +639,7 @@ func HandleDelete(store core.CanvasStore) http.HandlerFunc {
 		}
 		registry.mu.RLock()
 		rec := registry.records[id]
-		allowed := rec != nil && accountOf(r).mayDeleteLocked(rec.entry)
+		allowed := rec != nil && accountOf(r).mayEditLocked(rec.entry)
 		registry.mu.RUnlock()
 		if rec == nil {
 			http.Error(w, "no such board", http.StatusNotFound)
@@ -639,7 +711,7 @@ func HandleTrash(store core.CanvasStore) http.HandlerFunc {
 		items := make([]TrashedBoard, 0, len(registry.trash))
 		for id, t := range registry.trash {
 			items = append(items, TrashedBoard{ID: id, Name: t.name, CreatedBy: t.CreatedBy, DeletedBy: t.DeletedBy, DeletedAt: t.deletedAt,
-				CanRestore: a.mayEditLocked(t.Folder), CanPurge: a.mayPurge(t.entry)})
+				CanRestore: a.mayEditLocked(t.entry), CanPurge: a.mayPurge(t.entry)})
 		}
 		registry.mu.RUnlock()
 		sort.Slice(items, func(i, j int) bool { return items[i].DeletedAt.After(items[j].DeletedAt) })
@@ -659,7 +731,7 @@ func HandleRestoreFromTrash(store core.CanvasStore) http.HandlerFunc {
 		a := accountOf(r)
 		registry.mu.RLock()
 		item := registry.trash[id]
-		allowed := item != nil && a.mayEditLocked(item.Folder)
+		allowed := item != nil && a.mayEditLocked(item.entry)
 		registry.mu.RUnlock()
 		if item == nil {
 			http.Error(w, "no such board in the trash", http.StatusNotFound)

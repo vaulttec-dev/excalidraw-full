@@ -156,7 +156,7 @@ func MayEditFolder(ctx context.Context, store core.CanvasStore, login, folderID 
 	}
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
-	return accountFor(login).mayEditLocked(folderID)
+	return accountFor(login).mayPutInLocked(folderID)
 }
 
 // FindFolder returns a folder by its id or, ignoring case, its name.
@@ -393,8 +393,8 @@ func HandleDeleteFolder(store core.CanvasStore) http.HandlerFunc {
 }
 
 // HandleMoveBoard puts a board in a folder: {"folder": "<id>"}, or "" for none.
-// It takes the right to change boards both where the board is and where it
-// goes.
+// It takes the right to move the board from where it is (mayMoveLocked) and to
+// change boards where it goes.
 func HandleMoveBoard(store core.CanvasStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -412,7 +412,7 @@ func HandleMoveBoard(store core.CanvasStore) http.HandlerFunc {
 		a := accountOf(r)
 		registry.mu.RLock()
 		rec := registry.records[id]
-		allowed := rec == nil || (a.mayEditLocked(rec.Folder) && a.mayEditLocked(body.Folder))
+		allowed := rec == nil || (a.mayMoveLocked(rec.entry) && a.mayPutInLocked(body.Folder))
 		registry.mu.RUnlock()
 		if !allowed {
 			forbid(w, "this folder is view-only for you")

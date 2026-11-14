@@ -35,9 +35,10 @@ func TestFolderAccess(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// The memory store is shared between tests; leave it as found. The folder
-	// is deleted by the test itself.
+	// The memory store is shared between tests; leave it as found.
+	var folderID string
 	t.Cleanup(func() {
+		_ = store.Delete(ctx, foldersOwner, folderID)
 		for _, id := range []string{inside, loose} {
 			_ = store.Delete(ctx, owner, id)
 			_ = store.Delete(ctx, trashOwner, id)
@@ -48,6 +49,7 @@ func TestFolderAccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	folderID = f.ID
 	if f.Access != accessView {
 		t.Fatalf("a new folder's access is %q, want view", f.Access)
 	}
@@ -61,6 +63,7 @@ func TestFolderAccess(t *testing.T) {
 	r.Get("/api/boards/{id}", HandleGet(store))
 	r.Put("/api/boards/{id}", HandlePut(store))
 	r.Put("/api/boards/{id}/folder", HandleMoveBoard(store))
+	r.Put("/api/boards/{id}/access", HandleBoardAccess(store))
 	r.Delete("/api/boards/{id}", HandleDelete(store))
 	r.Post("/api/boards/{id}/versions/{version}/restore", HandleRestoreVersion(store))
 	r.Post("/api/boards/trash/{id}/restore", HandleRestoreFromTrash(store))
@@ -112,8 +115,12 @@ func TestFolderAccess(t *testing.T) {
 			t.Fatalf("%s on a board in a view-only folder: canEdit %v canDelete %v", c.login, b.CanEdit, b.CanDelete)
 		}
 	}
-	if b := board("carol", loose); !b.CanEdit || b.CanDelete {
-		t.Fatalf("carol on a board outside folders: canEdit %v canDelete %v", b.CanEdit, b.CanDelete)
+	// A board is view-only for others too until its author opens it.
+	if b := board("carol", loose); b.CanEdit || b.CanDelete || b.CanManage || b.Access != accessView {
+		t.Fatalf("carol on bob's board outside folders: %+v", b)
+	}
+	if b := board("bob", loose); !b.CanEdit || !b.CanDelete || !b.CanManage {
+		t.Fatalf("bob on his board outside folders: %+v", b)
 	}
 	if got := folderAs("carol"); got.Access != accessView || got.CanEdit || got.CanManage {
 		t.Fatalf("carol sees the folder as %+v", got)
@@ -127,6 +134,23 @@ func TestFolderAccess(t *testing.T) {
 	expect("re-registering without a name", call(http.MethodPut, "/api/boards/"+inside, "carol", `{"key":"`+key+`"}`), http.StatusNoContent)
 	expect("moving out by carol", call(http.MethodPut, "/api/boards/"+inside+"/folder", "carol", `{"folder":""}`), http.StatusForbidden)
 	expect("moving in by carol", call(http.MethodPut, "/api/boards/"+loose+"/folder", "carol", `{"folder":"`+f.ID+`"}`), http.StatusForbidden)
+	// A board outside folders moves only by its author or an admin, even into
+	// a folder the mover may change: otherwise carol could lock bob out of it.
+	own, err := CreateFolder(ctx, store, "Carol's", "carol")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Delete(ctx, foldersOwner, own.ID) })
+	if b := board("carol", loose); b.CanMove {
+		t.Fatal("carol may move bob's board outside folders")
+	}
+	if b := board("bob", loose); !b.CanMove {
+		t.Fatal("bob may not move his own board")
+	}
+	expect("someone else's loose board into one's own folder", call(http.MethodPut, "/api/boards/"+loose+"/folder", "carol", `{"folder":"`+own.ID+`"}`), http.StatusForbidden)
+	expect("own loose board into a view-only folder", call(http.MethodPut, "/api/boards/"+loose+"/folder", "bob", `{"folder":"`+own.ID+`"}`), http.StatusForbidden)
+	expect("admin moving a loose board", call(http.MethodPut, "/api/boards/"+loose+"/folder", "root", `{"folder":"`+own.ID+`"}`), http.StatusNoContent)
+	expect("folder author moving it back out", call(http.MethodPut, "/api/boards/"+loose+"/folder", "carol", `{"folder":""}`), http.StatusNoContent)
 	expect("delete by the board's author", call(http.MethodDelete, "/api/boards/"+inside, "bob", ""), http.StatusForbidden)
 	expect("version restore by carol", call(http.MethodPost, "/api/boards/"+inside+"/versions/1/restore", "carol", ""), http.StatusForbidden)
 	expect("folder rename by carol", call(http.MethodPut, "/api/folders/"+f.ID, "carol", `{"name":"Mine"}`), http.StatusForbidden)
@@ -138,8 +162,24 @@ func TestFolderAccess(t *testing.T) {
 	if MayWriteRoom(ctx, store, "carol", inside) || !MayWriteRoom(ctx, store, "alice", inside) {
 		t.Fatal("MayWriteRoom disagrees with the folder")
 	}
-	if !MayWriteRoom(ctx, store, "carol", loose) || !MayWriteRoom(ctx, store, "carol", "ffffffffffffffffffff") {
-		t.Fatal("boards outside folders, listed or not, take changes from anybody")
+	if MayWriteRoom(ctx, store, "carol", loose) || !MayWriteRoom(ctx, store, "bob", loose) {
+		t.Fatal("MayWriteRoom disagrees with the board")
+	}
+	if !MayWriteRoom(ctx, store, "carol", "ffffffffffffffffffff") {
+		t.Fatal("a room that is not listed takes changes from anybody")
+	}
+
+	// The board's author opens it: outside folders that is enough; in a
+	// view-only folder it is not.
+	expect("board access by carol", call(http.MethodPut, "/api/boards/"+loose+"/access", "carol", `{"access":"edit"}`), http.StatusForbidden)
+	expect("bad board access", call(http.MethodPut, "/api/boards/"+loose+"/access", "bob", `{"access":"all"}`), http.StatusBadRequest)
+	expect("board access by bob", call(http.MethodPut, "/api/boards/"+loose+"/access", "bob", `{"access":"edit"}`), http.StatusOK)
+	if b := board("carol", loose); !b.CanEdit || !b.CanDelete || b.CanMove || b.CanManage {
+		t.Fatalf("carol on bob's opened board: %+v", b)
+	}
+	expect("board access by bob, in a folder", call(http.MethodPut, "/api/boards/"+inside+"/access", "bob", `{"access":"edit"}`), http.StatusOK)
+	if b := board("carol", inside); b.CanEdit || b.Access != accessEdit {
+		t.Fatalf("carol on an opened board in a view-only folder: %+v", b)
 	}
 	if !MayEditFolder(ctx, store, "root", f.ID) || MayEditFolder(ctx, store, "carol", f.ID) {
 		t.Fatal("MayEditFolder disagrees with the folder")

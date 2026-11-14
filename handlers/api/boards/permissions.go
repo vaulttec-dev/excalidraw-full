@@ -13,12 +13,12 @@ import (
 
 // Who may do what.
 //
-// A board outside any folder may be changed by anybody, and deleted by its
-// author or an administrator of an allowed GitHub organisation. A folder's
-// author and the administrators may do anything in it; everybody else gets
-// what the folder's access says: looking only ("view", the default) or changing
-// and deleting its boards too ("edit"). Renaming or deleting a folder and
-// changing its access stays with its author and the administrators.
+// Boards and folders both have an author and an access: what everybody else
+// may do, look only ("view", the default) or change and delete too ("edit").
+// The administrators of an allowed GitHub organisation may do anything, and so
+// may a folder's author with the boards in it. Anybody else may change a board
+// when both the board and its folder allow them. Setting the access, and
+// renaming or deleting a folder, stays with the author and the administrators.
 
 const (
 	accessView = "view"
@@ -86,19 +86,39 @@ func folderOfLocked(folderID string) *folder {
 	return registry.folders[folderID]
 }
 
-// mayEditLocked tells whether the account may change a board in folderID:
-// draw on it, rename it, move it or restore a version of it.
-func (a account) mayEditLocked(folderID string) bool {
+// mayPutInLocked tells whether the account may put a board into folderID
+// (empty for none): the folder lets them change its boards.
+func (a account) mayPutInLocked(folderID string) bool {
 	f := folderOfLocked(folderID)
 	return f == nil || a.mayEditFolder(f)
 }
 
-// mayDeleteLocked tells whether the account may move a board to the trash. In
-// a folder, whoever may change its boards may; outside one, the board's author
-// or an administrator.
-func (a account) mayDeleteLocked(e entry) bool {
-	if f := folderOfLocked(e.Folder); f != nil {
-		return a.mayEditFolder(f)
+// mayEditLocked tells whether the account may change a board: draw on it,
+// rename it, restore a version, delete it. The folder's author and the
+// administrators may; anybody else needs both the board and its folder to
+// allow it — the board's author, or a board open to everybody, in a folder
+// they may change.
+func (a account) mayEditLocked(e entry) bool {
+	f := folderOfLocked(e.Folder)
+	if f != nil && a.privileged(f.CreatedBy) {
+		return true
+	}
+	board := a.privileged(e.CreatedBy) || (e.Access == accessEdit && a.login != "")
+	return board && (f == nil || a.mayEditFolder(f))
+}
+
+// mayManageBoard tells whether the account may set who may change a board.
+func (a account) mayManageBoard(e entry) bool {
+	return a.privileged(e.CreatedBy)
+}
+
+// mayMoveLocked tells whether the account may take a board out of where it is:
+// its author, the author of its folder or an administrator. Anybody else could
+// put a board into a folder of their own and lock its author out of it. Where
+// it goes takes mayPutInLocked too.
+func (a account) mayMoveLocked(e entry) bool {
+	if f := folderOfLocked(e.Folder); f != nil && a.privileged(f.CreatedBy) {
+		return true
 	}
 	return a.privileged(e.CreatedBy)
 }
@@ -126,7 +146,7 @@ func MayWriteRoom(ctx context.Context, store core.CanvasStore, login, room strin
 	registry.mu.RLock()
 	defer registry.mu.RUnlock()
 	rec := registry.records[room]
-	return rec == nil || a.mayEditLocked(rec.Folder)
+	return rec == nil || a.mayEditLocked(rec.entry)
 }
 
 // MayWriteRequest is MayWriteRoom for an HTTP request.
